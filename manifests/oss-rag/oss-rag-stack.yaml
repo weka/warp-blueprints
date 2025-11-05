@@ -474,7 +474,7 @@ data:
           - name: HUGGING_FACE_HUB_TOKEN
             valueFrom:
               secretKeyRef:
-                name: hf-token-secret
+                name: hf-api-key
                 key: token
   
   vllm-stack-chat.yaml: |
@@ -519,6 +519,6 @@ data:
           - name: HUGGING_FACE_HUB_TOKEN
             valueFrom:
               secretKeyRef:
-                name: hf-token-secret
+                name: hf-api-key
                 key: token
 ---
