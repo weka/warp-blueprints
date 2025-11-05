@@ -500,7 +500,7 @@ data:
           - matchExpressions:
               - key: "eks.amazonaws.com/nodegroup"
                 operator: "In"
-                values: [ "gpu-node-group-2025102723213486620000001b" ]
+                values: [ "gpu-node-group-20251105063531451200000019" ]
     
     #    nodeSelectorTerms:
     #      - matchExpressions:
