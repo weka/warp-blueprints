@@ -1,0 +1,259 @@
+apiVersion: warp.io/v1alpha1
+kind: WekaAppStore
+metadata:
+  name: app-store-cluster-init
+  namespace: default
+spec:
+  appStack:
+    components:
+      - name: kube-prom-stack
+        description: "Prometheus and Grafana monitoring stack"
+        enabled: true
+        dependsOn:
+          - prometheus-adapter
+        helmChart:
+          name: "https://prometheus-community.github.io/helm-charts"
+          releaseName: "kube-prometheus-stack"
+        valuesFiles:
+          - kind: ConfigMap
+            name: prom-stack-config
+            key: prom-stack_values.yaml
+        waitForReady: true
+        readinessCheck:
+          type: pod
+          selector: "app.kubernetes.io/instance=kube-prometheus-stack,app.kubernetes.io/name=grafana"
+          timeout: 300
+        targetNamespace: monitoring
+        #
+      - name: prometheus-adapter
+        description: "Prometheus Adapter for Kubernetes metrics APIs"
+        enabled: true
+        helmChart:
+          name: "https://prometheus-community.github.io/helm-charts"
+          releaseName: "prometheus-adapter"
+        valuesFiles:
+          - kind: ConfigMap
+            name: prometheus-adapter-config
+            key: prometheus-adapter_values.yaml
+        waitForReady: true
+        readinessCheck:
+          type: pod
+          selector: "app.kubernetes.io/instance=prometheus-adapter,app.kubernetes.io/name=prometheus-adapter"
+          timeout: 300
+        targetNamespace: monitoring
+
+      #NVIDIA GPU Operator
+      - name: nvidia-operator
+        description: "Certificate management for Kubernetes"
+        enabled: true
+        dependsOn:
+          - prometheus-adapter
+        helmChart:
+          name: "https://nvidia.github.io/gpu-operator"
+          version: "v25.3.0"
+          releaseName: "gpu-operator"
+        waitForReady: true
+        readinessCheck:
+          type: pod
+          selector: "app=gpu-operator"
+          timeout: 300
+        targetNamespace: gpu-operator
+---
+# ConfigMap for Prom-stack values
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prom-stack-config
+  namespace: monitoring
+data:
+  prom-stack_values.yaml: |
+    ## Create default rules for monitoring the cluster
+    #
+    # Disable `etcd` and `kubeScheduler` rules (managed by DOKS, so metrics are not accessible)
+    defaultRules:
+      create: true
+      rules:
+        etcd: false
+        kubeScheduler: false
+
+    ## Component scraping kube scheduler
+    ##
+    # Disabled because it's being managed by DOKS, so it's not accessible
+    kubeScheduler:
+      enabled: false
+
+    ## Component scraping etcd
+    ##
+    # Disabled because it's being managed by DOKS, so it's not accessible
+    kubeEtcd:
+      enabled: false
+
+    alertmanager:
+      ## Deploy alertmanager
+      ##
+      enabled: true
+      # config:
+      #   global:
+      #     resolve_timeout: 5m
+      #     slack_api_url: "<YOUR_SLACK_APP_INCOMING_WEBHOOK_URL_HERE>"
+      #   route:
+      #     receiver: "slack-notifications"
+      #     repeat_interval: 12h
+      #     routes:
+      #       - receiver: "slack-notifications"
+      #         # matchers:
+      #         #   - alertname="EmojivotoInstanceDown"
+      #         # continue: false
+      #   receivers:
+      #     - name: "slack-notifications"
+      #       slack_configs:
+      #         - channel: "#<YOUR_SLACK_CHANNEL_NAME_HERE>"
+      #           send_resolved: true
+      #           title: "{{ range .Alerts }}{{ .Annotations.summary }}\n{{ end }}"
+      #           text: "{{ range .Alerts }}{{ .Annotations.description }}\n{{ end }}"
+
+    # additionalPrometheusRulesMap:
+    #   rule-name:
+    #     groups:
+    #     - name: emojivoto-instance-down
+    #       rules:
+    #         - alert: EmojivotoInstanceDown
+    #           expr: sum(kube_pod_owner{namespace="emojivoto"}) by (namespace) < 4
+    #           for: 1m
+    #           labels:
+    #             severity: 'critical'
+    #             alert_type: 'infrastructure'
+    #           annotations:
+    #             description: ' The Number of pods from the namespace {{ $labels.namespace }} is lower than the expected 4. '
+    #             summary: 'Pod in {{ $labels.namespace }} namespace down'
+
+    ## Using default values from https://github.com/grafana/helm-charts/blob/main/charts/grafana/values.yaml
+    ##
+    grafana:
+      enabled: true
+      adminPassword: prom-operator # Please change the default password in production !!!
+      #   affinity:
+      #     nodeAffinity:
+      #       preferredDuringSchedulingIgnoredDuringExecution:
+      #       - weight: 1
+      #         preference:
+      #           matchExpressions:
+      #           - key: preferred
+      #             operator: In
+      #             values:
+      #             - observability
+
+      # # Starter Kit setup for DigitalOcean Block Storage
+      # persistence:
+      #   enabled: true
+      #   storageClassName: do-block-storage
+      #   accessModes: ["ReadWriteOnce"]
+      #   size: 5Gi
+
+    ## Manages Prometheus and Alertmanager components
+    ##
+    prometheusOperator:
+      enabled: true
+
+    ## Deploy a Prometheus instance
+    ##
+    prometheus:
+      enabled: true
+
+      # Monitor vLLM pods using ServiceMonitor
+      additionalServiceMonitors:
+        - name: "vllm-monitor"
+          selector:
+            matchExpressions:
+              - key: app.kubernetes.io/managed-by
+                operator: In
+                values:
+                  - Helm
+              - key: environment
+                operator: In
+                values:
+                  - test
+                  - router
+              - key: release
+                operator: In
+                values:
+                  - test
+                  - router
+          namespaceSelector:
+            any: true
+          endpoints:
+            - port: "service-port"
+            - port: "router-sport"
+---
+# ConfigMap for Prometheus Adaptor values
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-adapter-config
+  namespace: monitoring
+data:
+  prometheus-adapter_values.yaml: |
+    loglevel: 1
+
+    prometheus:
+      url: http://kube-prom-stack-kube-prome-prometheus.monitoring.svc
+      port: 9090
+
+    rules:
+      default: true
+      custom:
+
+      # Example metric to export for HPA
+      - seriesQuery: '{__name__=~"^vllm:num_requests_waiting$"}'
+        resources:
+          overrides:
+            namespace:
+              resource: "namespace"
+        name:
+          matches: ""
+          as: "vllm_num_requests_waiting"
+        metricsQuery: sum by(namespace) (vllm:num_requests_waiting)
+
+      # Export num_incoming_requests_total by model name
+      - seriesQuery: '{__name__=~"^vllm:num_incoming_requests_total$"}'
+        resources:
+          overrides:
+            namespace:
+              resource: "namespace"
+        name:
+          matches: ""
+          as: "vllm_num_incoming_requests_total"
+        metricsQuery: sum by(namespace, model) (vllm:num_incoming_requests_total)
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: default
+  annotations:
+    storageclass.kubernetes.io/is-default-class: "true"
+provisioner: kubernetes.io/aws-ebs
+reclaimPolicy: Delete
+volumeBindingMode: WaitForFirstConsumer #This was changed to address the multi AZ nature of EKS
+parameters:
+  type: gp3
+---
+# Need to have Prometheus Operator installed FIRST
+#apiVersion: monitoring.coreos.com/v1
+#kind: ServiceMonitor
+#metadata:
+#  name: dcgm-exporter
+#  namespace: monitoring                  # can be elsewhere, but must be in Prometheus' namespaceSelector
+#  labels:
+#    release: kube-prom-stack            # <- change to your Prometheus' selector label
+#spec:
+#  namespaceSelector:
+#    matchNames:
+#      - gpu-operator
+#  selector:
+#    matchLabels:
+#      app: nvidia-dcgm-exporter   # <- adjust to match labels on nvidia-dcgm-exporter Service
+#  endpoints:
+#    - port: gpu-metrics                      # or use targetPort: 9400 if your Service lacks a port name
+#      path: /metrics
+#      interval: 30s
+#      honorLabels: true
