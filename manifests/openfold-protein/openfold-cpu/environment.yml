@@ -1,0 +1,6 @@
+python 3.10
+hmmer (jackhmmer)
+hhsuite (hhsearch)
+kalign3
+mmseqs2
+pip packages from requirements_cpu.txt

@@ -1,0 +1,178 @@
+apiVersion: warp.io/v1alpha1
+kind: WekaAppStore
+metadata:
+  name: openfold-protein-stack
+  namespace: openfold
+spec:
+  appStack:
+    components:
+        # 1. argo - workflow engine for managing Openfold jobs
+      - name: argo-scheduler
+        description: "Job controller for Openfold CPU and GPU workloads"
+        enabled: true
+        helmChart:
+          name: "https://argoproj.github.io/argo-helm"
+          version: "0.41.8"
+          releaseName: "argo-workflows"
+        valuesFiles:
+          - kind: ConfigMap
+            name: argo-config
+            key: argo_values.yaml
+        waitForReady: true
+        readinessCheck:
+          type: pod
+          selector: "app.kubernetes.io/instance=argo-workflows"
+          timeout: 300
+        targetNamespace: openfold
+
+      # 2. Argo workflow template for Openfold pipeline
+      - name: openfold-workflow-template
+        description: "Argo Workflow Template for Openfold Protein Structure Prediction"
+        enabled: true
+        dependsOn:
+          - argo-scheduler
+        kubernetesManifest: |
+          apiVersion: argoproj.io/v1alpha1
+          kind: WorkflowTemplate
+          metadata:
+            name: openfold-pipeline
+          spec:
+            entrypoint: openfold-pipeline
+            arguments:
+              parameters:
+                - name: protein-id
+                - name: gpu-id
+                  value: "0"
+          
+            # Shared volumes for all templates
+            volumes:
+              - name: openfold-data
+                persistentVolumeClaim:
+                  claimName: openfold-data
+          
+            templates:
+              # High-level pipeline: CPU step then GPU step
+              - name: openfold-pipeline
+                inputs:
+                  parameters:
+                    - name: protein-id
+                    - name: gpu-id
+                steps:
+                  - - name: cpu-preprocess
+                      template: cpu-preprocess
+                      arguments:
+                        parameters:
+                          - name: protein-id
+                            value: "{{inputs.parameters.protein-id}}"
+                  - - name: gpu-inference
+                      template: gpu-inference
+                      arguments:
+                        parameters:
+                          - name: protein-id
+                            value: "{{inputs.parameters.protein-id}}"
+                          - name: gpu-id
+                            value: "{{inputs.parameters.gpu-id}}"
+          
+              # CPU-only alignment step
+              - name: cpu-preprocess
+                inputs:
+                  parameters:
+                    - name: protein-id
+                container:
+                  image: wekachrisjen/warp-openfold-cpu:v0.1
+                  command: ["python", "run_cpu_pipeline.py"]
+                  args:
+                    - "--protein-id"
+                    - "{{inputs.parameters.protein-id}}"
+                    # You can override defaults via flags if needed:
+                    # - "--fasta-root"
+                    # - "/data/input_fasta_single"
+                    # - "--precomputed-alignments-dir"
+                    # - "/data/databases/embeddings_output_dir"
+                    # - "--uniref90-db"
+                    # - "/data/databases/uniref90/uniref90.fasta"
+                    # - "--pdb70-db"
+                    # - "/data/databases/pdb70/pdb70"
+                  resources:
+                    requests:
+                      cpu: "4"
+                      memory: "16Gi"
+                    limits:
+                      cpu: "8"
+                      memory: "32Gi"
+                  volumeMounts:
+                    - name: openfold-data
+                      mountPath: /data
+          
+              # GPU-only inference step
+              - name: gpu-inference
+                inputs:
+                  parameters:
+                    - name: protein-id
+                    - name: gpu-id
+                container:
+                  image: wekachrisjen/warp-openfold-gpu:v0.1
+                  command: ["python", "run_gpu_inference.py"]
+                  args:
+                    - "--protein-id"
+                    - "{{inputs.parameters.protein-id}}"
+                    - "--gpu-id"
+                    - "{{inputs.parameters.gpu-id}}"
+                    # optional overrides:
+                    # - "--fasta-root"
+                    # - "/data/input_fasta_single"
+                    # - "--output-root"
+                    # - "/data/predictions"
+                    # - "--precomputed-alignments-dir"
+                    # - "/data/databases/embeddings_output_dir"
+                    # - "--mmcif-dir"
+                    # - "/data/databases/pdb_mmcif/mmcif_files"
+                    # - "--openfold-checkpoint-path"
+                    # - "/data/openfold_params/finetuning_ptm_1.pt"
+                  resources:
+                    requests:
+                      cpu: "2"
+                      memory: "16Gi"
+                      nvidia.com/gpu: 1
+                    limits:
+                      cpu: "4"
+                      memory: "32Gi"
+                      nvidia.com/gpu: 1
+                  volumeMounts:
+                    - name: openfold-data
+                      mountPath: /data
+                  nodeSelector:
+                    nvidia.com/gpu.present: "true"
+
+        waitForReady: false
+        readinessCheck:
+          type: pod
+          selector: ""
+          timeout: 300
+        targetNamespace: openfold
+---
+# ConfigMap for Argo values
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: argo-config
+  namespace: openfold
+data:
+  argo_values.yaml: |
+    ## Setup Argo Server, can change to sso or oidc if needed
+    server:
+      enabled: true
+      authMode: "server"
+      
+    # This SA only works when the workflow is deployed in same k8s namespace as Argo Server
+    workflow:
+      serviceAccount:
+        create: true
+        name: argo-workflow-sa
+    
+    artifactRepository:
+      pvc:
+        create: true
+        size: 100Gi
+        storageClassName: "storageclass-wekafs-dir-api"
+---

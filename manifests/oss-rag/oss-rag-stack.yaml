@@ -167,8 +167,8 @@ spec:
         dependsOn:
           - milvus
           - milvus-init-db
-          - vllm-chat
-          - vllm-embedding
+#          - vllm-chat
+#          - vllm-embedding
         helmChart:
           repository: "https://open-webui.github.io/helm-charts"
           name: "open-webui"
@@ -272,6 +272,41 @@ data:
       successThreshold: 1
       failureThreshold: 5
     
+    persistence:
+      enabled: true
+      persistentVolumeClaim:
+        accessModes: ReadWriteMany
+        storageClass: "storageclass-wekafs-dir-api"
+        size: 50Gi
+    
+    etcd:
+      persistence:
+        enabled: true
+        persistentVolumeClaim:
+          accessModes: ReadWriteMany
+          storageClass: "storageclass-wekafs-dir-api"
+    
+    minio:
+      persistence:
+        enabled: true
+        persistentVolumeClaim:
+          accessModes: ReadWriteMany
+          storageClass: "storageclass-wekafs-dir-api"
+    
+    dataNode:
+      persistence:
+        enabled: true
+        persistentVolumeClaim:
+          accessModes: ReadWriteMany
+          storageClass: "storageclass-wekafs-dir-api"
+    
+    indexNode:
+      persistence:
+        enabled: true
+        persistentVolumeClaim:
+          accessModes: ReadWriteMany
+          storageClass: "storageclass-wekafs-dir-api"
+
     log:
       level: "info"
       file:
@@ -285,7 +320,7 @@ data:
         ## If true, create/use a Persistent Volume Claim
         ## If false, use emptyDir
         ##
-        enabled: false
+        enabled: true
         annotations:
           helm.sh/resource-policy: delete
         persistentVolumeClaim:
@@ -297,8 +332,8 @@ data:
           ##   set, choosing the default provisioner.
           ## ReadWriteMany access mode required for milvus cluster.
           ##
-          storageClass: default
-          accessModes: ReadWriteOnce
+          storageClass: storageclass-wekafs-dir-api
+          accessModes: ReadWriteMany
           size: 10Gi
           subPath: ""
 ---
@@ -441,12 +476,12 @@ data:
         pvcStorage: "100Gi"
         pvcAccessMode:
           - ReadWriteOnce
-        storageClass: "default"
+        storageClass: "storageclass-wekafs-dir-api"
         nodeSelectorTerms:
           - matchExpressions:
               - key: "eks.amazonaws.com/nodegroup"
                 operator: "In"
-                values: [ "gpu-node-group-2025102723213486620000001b" ]
+                values: [ "gpu-node-group-20251114002111175200000019" ]
     
         vllmConfig:
           enableChunkedPrefill: false
@@ -495,12 +530,12 @@ data:
         pvcStorage: "100Gi"
         pvcAccessMode:
           - ReadWriteOnce
-        storageClass: "default"
+        storageClass: "storageclass-wekafs-dir-api"
         nodeSelectorTerms:
           - matchExpressions:
               - key: "eks.amazonaws.com/nodegroup"
                 operator: "In"
-                values: [ "gpu-node-group-20251105063531451200000019" ]
+                values: [ "gpu-node-group-20251114002111175200000019" ]
     
     #    nodeSelectorTerms:
     #      - matchExpressions:
