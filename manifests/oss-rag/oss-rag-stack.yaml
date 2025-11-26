@@ -22,7 +22,7 @@ spec:
           type: pod
           selector: "app=cert-manager"
           timeout: 300
-        {% if namespace %}targetNamespace: {{ namespace }}{% endif %}: default
+        {% if namespace %}targetNamespace: {{ namespace }}{% endif %}
       
       # 2. Milvus - Depends on cert-manager being ready
       - name: milvus
@@ -44,11 +44,11 @@ spec:
           type: pod
           selector: "app.kubernetes.io/instance=my-release"
           timeout: 300
-        {% if namespace %}targetNamespace: {{ namespace }}{% endif %}: default
+        {% if namespace %}targetNamespace: {{ namespace }}{% endif %}
 
       # Initialize Milvus database for Open WebUI
       - name: milvus-init-db
-        {% if namespace %}targetNamespace: {{ namespace }}{% endif %}: default
+        {% if namespace %}targetNamespace: {{ namespace }}{% endif %}
         dependsOn:
           - milvus
         description: "Initialize Milvus database for application"
@@ -97,7 +97,7 @@ spec:
           type: pod
           selector: "helm-release-name=vllm-embed"
           timeout: 600
-        {% if namespace %}targetNamespace: {{ namespace }}{% endif %}: default
+        {% if namespace %}targetNamespace: {{ namespace }}{% endif %}
       
       # 4. vLLM Chat Stack - Depends on Milvus (parallel with embedding)
       - name: vllm-chat
@@ -116,7 +116,7 @@ spec:
           type: pod
           selector: "helm-release-name=vllm-chat"
           timeout: 900
-        {% if namespace %}targetNamespace: {{ namespace }}{% endif %}: default
+        {% if namespace %}targetNamespace: {{ namespace }}{% endif %}
       
       # 5. Hayhooks Indexing Pipeline - Depends on both vLLM services
       # NOTE: This is a placeholder. To use this component:
@@ -137,8 +137,8 @@ spec:
           type: pod
           selector: "app=haystack"
           timeout: 300
-        {% if namespace %}targetNamespace: {{ namespace }}{% endif %}: default
-      
+        {% if namespace %}targetNamespace: {{ namespace }}{% endif %}
+
       # 6. Hayhooks RAG Search - Depends on indexing pipeline and chat model
       # NOTE: This is a placeholder. To use this component:
       # 1. Include the full Kubernetes manifest from hayhook-openai.yaml
@@ -158,7 +158,7 @@ spec:
           type: pod
           selector: "app=haystack-rag"
           timeout: 300
-        {% if namespace %}targetNamespace: {{ namespace }}{% endif %}: default
+        {% if namespace %}targetNamespace: {{ namespace }}{% endif %}
       
       # 7. Open WebUI - Depends on all services being ready
       - name: open-webui
@@ -182,7 +182,7 @@ spec:
           type: pod
           selector: "app.kubernetes.io/name=open-webui"
           timeout: 300
-        {% if namespace %}targetNamespace: {{ namespace }}{% endif %}: default
+        {% if namespace %}targetNamespace: {{ namespace }}{% endif %}
 ---
 # ConfigMap for Milvus values
 apiVersion: v1
