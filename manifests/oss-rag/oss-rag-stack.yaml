@@ -466,7 +466,7 @@ data:
       - name: "mistral-7b"
         repository: "vllm/vllm-openai"
         tag: "v0.9.0"
-        modelURL: "{{ vllm_model | default('intfloat/e5-mistral-7b-instruct') }}"
+        modelURL: "{{ vllm_embed_model | default('intfloat/e5-mistral-7b-instruct', true) }}"
     
         replicaCount: 1
     
@@ -520,7 +520,7 @@ data:
       - name: "mistral-7b-chat"
         repository: "vllm/vllm-openai"
         tag: "latest"
-        modelURL: "{{ vllm_model | default('mistralai/Mistral-7B-Instruct-v0.3') }}"
+        modelURL: "{{ vllm_chat_model | default('mistralai/Mistral-7B-Instruct-v0.3', true) }}"
     
         replicaCount: 1
     
