@@ -13,6 +13,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         wget \
         git \
         ca-certificates \
+        libopenblas0  \
     && rm -rf /var/lib/apt/lists/*
 
 SHELL ["bash", "-c"]
@@ -48,10 +49,10 @@ RUN pip install --no-cache-dir -r /tmp/requirements_cpu.txt
 
 # --- App code ---
 WORKDIR /app
-COPY run_cpu_pipeline.py .
+COPY run_mmseq_pipeline.py .
 
 # Non-root user
 RUN useradd -m -u 1000 appuser && chown -R appuser /app
 USER appuser
 
-ENTRYPOINT ["python", "run_cpu_pipeline.py"]
+ENTRYPOINT ["python", "run_mmseq_pipeline.py"]

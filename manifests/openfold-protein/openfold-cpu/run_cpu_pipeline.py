@@ -123,22 +123,22 @@ def main():
     )
     parser.add_argument(
         "--jackhmmer-bin",
-        default=os.environ.get("JACKHMMER_BIN", "/opt/conda/bin/jackhmmer"),
+        default=os.environ.get("JACKHMMER_BIN", "/opt/conda/envs/cpu-env/bin/jackhmmer"),
         help="Path to jackhmmer binary.",
     )
     parser.add_argument(
         "--hhsearch-bin",
-        default=os.environ.get("HHSEARCH_BIN", "/opt/conda/bin/hhsearch"),
+        default=os.environ.get("HHSEARCH_BIN", "/opt/conda/envs/cpu-env/bin/hhsearch"),
         help="Path to hhsearch binary.",
     )
     parser.add_argument(
         "--kalign-bin",
-        default=os.environ.get("KALIGN_BIN", "/opt/conda/bin/kalign"),
+        default=os.environ.get("KALIGN_BIN", "/opt/conda/envs/cpu-env/bin/kalign"),
         help="Path to kalign binary.",
     )
     parser.add_argument(
         "--tmpdir",
-        default=os.environ.get("TMPDIR", "/tmp"),
+        default=os.environ.get("TMPDIR", "/data/tmp"),
         help="Temporary directory (default: env TMPDIR or /tmp).",
     )
 

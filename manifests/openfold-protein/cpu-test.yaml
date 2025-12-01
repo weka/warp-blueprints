@@ -1,0 +1,32 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: openfold-cpu-shell
+  labels:
+    app: openfold-cpu-shell
+spec:
+  restartPolicy: Never
+  securityContext:
+    fsGroup: 1000
+    fsGroupChangePolicy: OnRootMismatch
+  containers:
+    - name: cpu-shell
+      image: wekachrisjen/warp-openfold-cpu:v0.1
+      command: ["/bin/bash"]
+      args: ["-l"]   # or ["-c", "sleep infinity"] if you want a long-running shell
+      tty: true
+      stdin: true
+      volumeMounts:
+        - name: openfold-data-pvc
+          mountPath: /data
+      resources:
+        requests:
+          cpu: "4"
+          memory: "16Gi"
+        limits:
+          cpu: "8"
+          memory: "32Gi"
+  volumes:
+    - name: openfold-data-pvc
+      persistentVolumeClaim:
+        claimName: openfold-data-pvc

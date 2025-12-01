@@ -1,0 +1,41 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: mmseqs-uniref50-build
+spec:
+  template:
+    metadata:
+      labels:
+        app: mmseqs-uniref50-build
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: mmseqs
+          # TODO: replace with your image that has mmseqs installed
+          image: wekachrisjen/warp-openfold-cpu:v0.5
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: MMSEQS_THREADS
+              value: "32"
+          command: ["bash", "-c"]
+          args:
+            - |
+              set -e
+              echo "Creating directories under /data..."
+              mkdir -p /data/databases/uniref50 /data/tmp
+
+              echo "Building UniRef50 MMseqs database..."
+              mmseqs databases UniRef50 \
+                /data/databases/uniref50/uniref50_mmseqs \
+                /data/tmp \
+                --threads "${MMSEQS_THREADS:-32}"
+
+              echo "UniRef50 MMseqs database build complete."
+          volumeMounts:
+            - name: openfold-data
+              mountPath: /data
+      volumes:
+        - name: openfold-data
+          persistentVolumeClaim:
+            claimName: openfold-data-pvc
+  backoffLimit: 1

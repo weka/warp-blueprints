@@ -3,12 +3,19 @@ kind: WorkflowTemplate
 metadata:
   name: openfold-pipeline
 spec:
-  entrypoint: openfold-pipeline
+  # NEW: top-level entrypoint now runs a batch of proteins
+  entrypoint: openfold-batch
   arguments:
     parameters:
-      - name: protein-id
+      # JSON array of protein IDs to process
+      # You can override this when submitting the workflow
+      - name: protein-ids
+        value: '["protein1.fasta", "protein2.fasta"]'
       - name: gpu-id
         value: "0"
+
+  # Optional: global parallelism cap (max pods at once)
+  # parallelism: 4
 
   # Shared volumes for all templates
   volumes:
@@ -17,7 +24,29 @@ spec:
         claimName: openfold-data-pvc
 
   templates:
-    # High-level pipeline: CPU step then GPU step
+    # ------------------------------------------------------------------------
+    # NEW: Batch wrapper – fans out over multiple protein IDs
+    # ------------------------------------------------------------------------
+    - name: openfold-batch
+      inputs:
+        parameters:
+          - name: protein-ids    # JSON array: ["p1", "p2", ...]
+          - name: gpu-id
+      steps:
+        - - name: per-protein
+            template: openfold-pipeline
+            arguments:
+              parameters:
+                - name: protein-id
+                  value: "{{item}}"                      # each protein ID
+                - name: gpu-id
+                  value: "{{inputs.parameters.gpu-id}}"
+            # Fan-out over the protein list
+            withParam: "{{inputs.parameters.protein-ids}}"
+
+    # ------------------------------------------------------------------------
+    # Single-protein pipeline: CPU step then GPU step
+    # ------------------------------------------------------------------------
     - name: openfold-pipeline
       inputs:
         parameters:
@@ -25,11 +54,12 @@ spec:
           - name: gpu-id
       steps:
         - - name: cpu-preprocess
-            template: cpu-preprocess
+            template: gpu-mmseq2-preprocess
             arguments:
               parameters:
                 - name: protein-id
                   value: "{{inputs.parameters.protein-id}}"
+
         - - name: gpu-inference
             template: gpu-inference
             arguments:
@@ -39,38 +69,33 @@ spec:
                 - name: gpu-id
                   value: "{{inputs.parameters.gpu-id}}"
 
-    # CPU-only alignment step
-    - name: cpu-preprocess
+    # ------------------------------------------------------------------------
+    # CPU-only alignment step (per protein)
+    # ------------------------------------------------------------------------
+    - name: gpu-mmseq2-preprocess
       inputs:
         parameters:
           - name: protein-id
       container:
-        image: wekachrisjen/warp-openfold-cpu:v0.1
-        command: ["python", "run_cpu_pipeline.py"]
+        image: wekachrisjen/warp-openfold-cpu:v0.11
+        command: ["python", "run_mmseq_pipeline.py"]
         args:
           - "--protein-id"
           - "{{inputs.parameters.protein-id}}"
-          # You can override defaults via flags if needed:
-          # - "--fasta-root"
-          # - "/data/input_fasta_single"
-          # - "--precomputed-alignments-dir"
-          # - "/data/databases/embeddings_output_dir"
-          # - "--uniref90-db"
-          # - "/data/databases/uniref90/uniref90.fasta"
-          # - "--pdb70-db"
-          # - "/data/databases/pdb70/pdb70"
         resources:
           requests:
-            cpu: "4"
+            cpu: "8"
             memory: "16Gi"
           limits:
-            cpu: "8"
+            cpu: "16"
             memory: "32Gi"
         volumeMounts:
           - name: openfold-data-pvc
             mountPath: /data
 
-    # GPU-only inference step
+    # ------------------------------------------------------------------------
+    # GPU-only inference step (per protein)
+    # ------------------------------------------------------------------------
     - name: gpu-inference
       inputs:
         parameters:
@@ -84,17 +109,6 @@ spec:
           - "{{inputs.parameters.protein-id}}"
           - "--gpu-id"
           - "{{inputs.parameters.gpu-id}}"
-          # optional overrides:
-          # - "--fasta-root"
-          # - "/data/input_fasta_single"
-          # - "--output-root"
-          # - "/data/predictions"
-          # - "--precomputed-alignments-dir"
-          # - "/data/databases/embeddings_output_dir"
-          # - "--mmcif-dir"
-          # - "/data/databases/pdb_mmcif/mmcif_files"
-          # - "--openfold-checkpoint-path"
-          # - "/data/openfold_params/finetuning_ptm_1.pt"
         resources:
           requests:
             cpu: "2"

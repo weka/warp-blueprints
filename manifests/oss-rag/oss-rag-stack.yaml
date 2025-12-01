@@ -422,7 +422,7 @@ data:
         value: "http://vllm-embed-mistral-7b-engine-service.default.svc.cluster.local/v1"
       # Choose the embedding model
       - name: RAG_EMBEDDING_MODEL
-        value: "intfloat/e5-mistral-7b-instruct"
+        value: "{{ vllm_embed_model | default('intfloat/e5-mistral-7b-instruct', true) }}"
     
     #Branding of Open WebUI
       - name: ENABLE_SIGNUP

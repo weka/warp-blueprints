@@ -1,0 +1,170 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: openfold-db-bootstrap
+spec:
+  entrypoint: bootstrap-databases
+
+  # Optional: cap overall parallel pods for this workflow
+  parallelism: 4
+
+  volumes:
+    - name: openfold-data
+      persistentVolumeClaim:
+        claimName: openfold-data-pvc
+
+  templates:
+    # ============================
+    # Top-level: run PDB70 + UniRef50 in parallel
+    # ============================
+    - name: bootstrap-databases
+      steps:
+        - - name: download-pdb70
+            template: download-pdb70
+          - name: build-uniref50
+            template: build-uniref50
+          # If you add UniRef90, you can stick it here too:
+          # - name: build-uniref90
+          #   template: build-uniref90
+
+    # ============================
+    # PDB70 downloader (1 pod)
+    # ============================
+    - name: download-pdb70
+      container:
+        image: wekachrisjen/warp-openfold-cpu:v0.5
+        imagePullPolicy: IfNotPresent
+        env:
+          - name: PDB70_ROOT
+            value: "/data/databases/pdb70"
+          - name: PDB70_URL
+            value: "https://wwwuser.gwdg.de/~compbiol/data/hhsuite/databases/hhsuite_dbs/pdb70_from_mmcif_latest.tar.gz"
+        command: ["bash", "-c"]
+        args:
+          - |
+            set -euo pipefail
+
+            log() {
+              echo "[$(date '+%Y-%m-%d %H:%M:%S')] [INIT-PDB70] $*" >&2
+            }
+
+            PDB70_ROOT="${PDB70_ROOT:-/data/databases/pdb70}"
+            PDB70_URL="${PDB70_URL}"
+            PDB70_TARBALL="pdb70_from_mmcif_latest.tar.gz"
+
+            log "Ensuring PDB70 root directory exists at ${PDB70_ROOT}"
+            mkdir -p "${PDB70_ROOT}"
+            cd "${PDB70_ROOT}"
+
+            # Already present?
+            if ls pdb70_cs219.ffdata >/dev/null 2>&1; then
+              log "PDB70 already installed. Nothing to do."
+              exit 0
+            fi
+
+            log "PDB70 not found. Downloading from ${PDB70_URL}"
+
+            if command -v curl >/dev/null 2>&1; then
+              curl -L -o "${PDB70_TARBALL}" "${PDB70_URL}"
+            else
+              wget -O "${PDB70_TARBALL}" "${PDB70_URL}"
+            fi
+
+            log "Extracting PDB70 tarball..."
+            tar -xzf "${PDB70_TARBALL}"
+
+            log "Locating pdb70_cs219.ffdata..."
+            inner_file="$(find "${PDB70_ROOT}" -maxdepth 3 -type f -name 'pdb70_cs219.ffdata' | head -n 1 || true)"
+
+            if [ -z "${inner_file}" ]; then
+              log "ERROR: Could not locate pdb70_cs219.ffdata after extracting tarball."
+              exit 1
+            fi
+
+            inner_dir="$(dirname "${inner_file}")"
+            log "Found pdb70 files inside ${inner_dir}"
+
+            # Symlink all pdb70_* files into the root directory
+            for f in "${inner_dir}"/pdb70_*; do
+              base="$(basename "${f}")"
+              if [ ! -e "${PDB70_ROOT}/${base}" ]; then
+                ln -s "${f}" "${PDB70_ROOT}/${base}"
+                log "Linked ${base}"
+              fi
+            done
+
+            if [ ! -f "${PDB70_ROOT}/pdb70_cs219.ffdata" ]; then
+              log "ERROR: PDB70 installation incomplete."
+              exit 1
+            fi
+
+            log "PDB70 installed successfully at ${PDB70_ROOT}"
+        volumeMounts:
+          - name: openfold-data
+            mountPath: /data
+
+    # ============================
+    # UniRef50 MMseqs DB builder (1 pod)
+    # ============================
+    - name: build-uniref50
+      container:
+        image: wekachrisjen/warp-openfold-cpu:v0.5
+        imagePullPolicy: IfNotPresent
+        env:
+          - name: MMSEQS_THREADS
+            value: "32"
+        command: ["bash", "-c"]
+        args:
+          - |
+            set -euo pipefail
+
+            log() {
+              echo "[$(date '+%Y-%m-%d %H:%M:%S')] [INIT-UNIREFF50] $*" >&2
+            }
+
+            log "Creating directories under /data..."
+            mkdir -p /data/databases/uniref50 /data/tmp
+
+            log "Building UniRef50 MMseqs database..."
+            mmseqs databases UniRef50 \
+              /data/databases/uniref50/uniref50_mmseqs \
+              /data/tmp \
+              --threads "${MMSEQS_THREADS:-32}"
+
+            log "UniRef50 MMseqs database build complete."
+        volumeMounts:
+          - name: openfold-data
+            mountPath: /data
+
+    # ============================
+    # (Optional) UniRef90 builder
+    # ============================
+    # - name: build-uniref90
+    #   container:
+    #     image: wekachrisjen/warp-openfold-cpu:v0.5
+    #     imagePullPolicy: IfNotPresent
+    #     env:
+    #       - name: MMSEQS_THREADS
+    #         value: "32"
+    #     command: ["bash", "-c"]
+    #     args:
+    #       - |
+    #         set -euo pipefail
+    #
+    #         log() {
+    #           echo "[$(date '+%Y-%m-%d %H:%M:%S')] [INIT-UNIREFF90] $*" >&2
+    #         }
+    #
+    #         log "Creating directories under /data..."
+    #         mkdir -p /data/databases/uniref90 /data/tmp
+    #
+    #         log "Building UniRef90 MMseqs database..."
+    #         mmseqs databases UniRef90 \
+    #           /data/databases/uniref90/uniref90_mmseqs \
+    #           /data/tmp \
+    #           --threads "${MMSEQS_THREADS:-32}"
+    #
+    #         log "UniRef90 MMseqs database build complete."
+    #     volumeMounts:
+    #       - name: openfold-data
+    #         mountPath: /data

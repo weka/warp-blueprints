@@ -1,0 +1,93 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: download-pdb70
+spec:
+  template:
+    metadata:
+      labels:
+        app: download-pdb70
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: pdb70-download
+          image: wekachrisjen/warp-openfold-cpu:v0.5
+          imagePullPolicy: IfNotPresent
+          env:
+            # Where to store PDB70 in your shared PVC
+            - name: PDB70_ROOT
+              value: "/data/databases/pdb70"
+            # URL for official HHsuite PDB70 database
+            - name: PDB70_URL
+              value: "https://wwwuser.gwdg.de/~compbiol/data/hhsuite/databases/hhsuite_dbs/pdb70_from_mmcif_latest.tar.gz"
+          command: ["bash", "-c"]
+          args:
+            - |
+              set -euo pipefail
+
+              log() {
+                echo "[$(date '+%Y-%m-%d %H:%M:%S')] [INIT] $*" >&2
+              }
+
+              PDB70_ROOT="${PDB70_ROOT:-/data/databases/pdb70}"
+              PDB70_URL="${PDB70_URL}"
+              PDB70_TARBALL="pdb70_from_mmcif_latest.tar.gz"
+
+              log "Ensuring PDB70 root directory exists at ${PDB70_ROOT}"
+              mkdir -p "${PDB70_ROOT}"
+              cd "${PDB70_ROOT}"
+
+              # Already present?
+              if ls pdb70_cs219.ffdata >/dev/null 2>&1; then
+                log "PDB70 already installed. Nothing to do."
+                exit 0
+              fi
+
+              log "PDB70 not found. Downloading from ${PDB70_URL}"
+
+              # Download tarball
+              if command -v curl >/dev/null 2>&1; then
+                curl -L -o "${PDB70_TARBALL}" "${PDB70_URL}"
+              else
+                wget -O "${PDB70_TARBALL}" "${PDB70_URL}"
+              fi
+
+              log "Extracting PDB70..."
+              tar -xzf "${PDB70_TARBALL}"
+
+              # Locate the extracted pdb70_* files
+              log "Locating pdb70_cs219.ffdata..."
+              inner_file="$(find "${PDB70_ROOT}" -maxdepth 3 -type f -name 'pdb70_cs219.ffdata' | head -n 1 || true)"
+
+              if [ -z "${inner_file}" ]; then
+                log "ERROR: Could not locate pdb70_cs219.ffdata after extracting tarball."
+                exit 1
+              fi
+
+              inner_dir="$(dirname "${inner_file}")"
+              log "Found pdb70 files inside ${inner_dir}"
+
+              # Symlink all pdb70_* files into the root directory
+              for f in "${inner_dir}"/pdb70_*; do
+                base="$(basename "${f}")"
+                if [ ! -e "${PDB70_ROOT}/${base}" ]; then
+                  ln -s "${f}" "${PDB70_ROOT}/${base}"
+                  log "Linked ${base}"
+                fi
+              done
+
+              # Final sanity check
+              if [ ! -f "${PDB70_ROOT}/pdb70_cs219.ffdata" ]; then
+                log "ERROR: PDB70 installation incomplete."
+                exit 1
+              fi
+
+              log "PDB70 installed successfully at ${PDB70_ROOT}"
+          volumeMounts:
+            - name: openfold-data
+              mountPath: /data
+      volumes:
+        - name: openfold-data
+          persistentVolumeClaim:
+            claimName: openfold-data-pvc
+  backoffLimit: 1
