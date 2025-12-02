@@ -60,8 +60,29 @@ RUN pip install --no-cache-dir -r /tmp/requirements_gpu.txt
 # ------------------------------------------------------------------
 WORKDIR /app
 RUN git clone https://github.com/aqlaboratory/openfold.git ./openfold
-
 WORKDIR /app/openfold
+
+# Patch TensorRT import to be optional
+RUN python - << 'PY'
+from pathlib import Path
+
+p = Path("openfold/utils/script_utils.py")
+text = p.read_text()
+
+needle = "from .tensorrt_utils import instrument_with_trt_compile\n"
+if needle in text:
+    replacement = (
+        "try:\n"
+        "    from .tensorrt_utils import instrument_with_trt_compile\n"
+        "except Exception:\n"
+        "    # Fallback no-op when TensorRT / cuda-python are not installed\n"
+        "    def instrument_with_trt_compile(model, *args, **kwargs):\n"
+        "        return model\n"
+    )
+    text = text.replace(needle, replacement)
+    p.write_text(text)
+PY
+
 RUN pip install --no-cache-dir --no-build-isolation -e .
 
 # ------------------------------------------------------------------
@@ -70,7 +91,9 @@ RUN pip install --no-cache-dir --no-build-isolation -e .
 WORKDIR /app
 COPY run_pretrained_openfold.py .
 COPY run_gpu_inference.py .
-ENV PYTHONPATH="/app:${PYTHONPATH}"
+
+# Make both your app root and the OpenFold repo visible as top-level modules
+ENV PYTHONPATH="/app:/app/openfold:${PYTHONPATH}"
 
 RUN useradd -m -u 1000 appuser && chown -R appuser /app
 USER appuser

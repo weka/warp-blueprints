@@ -67,7 +67,7 @@ spec:
         description: "Directory containing PDB mmCIF files (--mmcif-dir)."
 
       - name: openfold-checkpoint-path
-        value: "openfold/resources/openfold_msa_params/openfold_params/finetuning_ptm_1.pt"
+        value: "/data/openfold_weights/finetuning_ptm_1.pt"
         description: "OpenFold checkpoint path (--openfold-checkpoint-path)."
 
       - name: config-preset
@@ -216,7 +216,7 @@ spec:
           - name: gpu-id
           - name: run-pretrained-script
       container:
-        image: wekachrisjen/warp-openfold-gpu:v0.2
+        image: wekachrisjen/warp-openfold-gpu:v0.10
         imagePullPolicy: IfNotPresent
         command: ["bash", "-c"]
         args:

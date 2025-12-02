@@ -7,6 +7,8 @@ p_tqdm
 immutabledict
 fsspec
 einops
+pandas
+pytorch-lightning
 
 # Optional:
-deepspeed        # only if you use --use_deepspeed_evoformer_attention
+#deepspeed        # only if you use --use_deepspeed_evoformer_attention

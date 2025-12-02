@@ -1,13 +1,13 @@
 apiVersion: "sparkoperator.k8s.io/v1beta2"
 kind: SparkApplication
 metadata:
-  name: weka-spark-example
+  name: weka-spark-app
   namespace: spark
 spec:
   type: Scala
   mode: cluster
 
-  image: your-registry/spark-weka:3.5.5
+  image: weka-docker/spark-weka:3.5.5
   imagePullPolicy: IfNotPresent
 
   mainClass: org.apache.spark.examples.SparkPi
@@ -22,7 +22,7 @@ spec:
     onSubmissionFailureRetries: 5
     onSubmissionFailureRetryInterval: 20
 
-  # Use a service account that has an IAM role for S3 (IRSA) if you're on EKS
+
   driver:
     cores: 1
     memory: "2g"
