@@ -30,7 +30,7 @@ RUN conda config --system --add channels conda-forge && \
 # hmmer   -> jackhmmer
 # hhsuite -> hhsearch
 # kalign3 -> kalign (or use kalign2 if kalign3 not available)
-# mmseqs2 -> MMseqs2 (conda version, kept as fallback)
+# mmseqs2 -> MMseqs2
 # ------------------------------------------------------------------
 RUN mamba create -y -n cpu-env python=3.10 \
         hmmer \
@@ -42,22 +42,6 @@ RUN mamba create -y -n cpu-env python=3.10 \
 # Make the env active for subsequent RUNs
 RUN echo "conda activate cpu-env" >> ~/.bashrc
 ENV PATH="/opt/conda/envs/cpu-env/bin:${PATH}"
-
-# ------------------------------------------------------------------
-# Install latest mmseqs2 binary from upstream
-# ------------------------------------------------------------------
-RUN mkdir -p /opt/mmseqs2 && \
-    wget -O /tmp/mmseqs-linux-avx2.tar.gz "https://mmseqs.com/latest/mmseqs-linux-avx2.tar.gz" && \
-    tar -xzf /tmp/mmseqs-linux-avx2.tar.gz -C /opt/mmseqs2 && \
-    rm /tmp/mmseqs-linux-avx2.tar.gz && \
-    MMSEQS_BIN_PATH="$(find /opt/mmseqs2 -maxdepth 5 -type f -name mmseqs | head -n 1)" && \
-    echo "Using MMseqs2 binary at: ${MMSEQS_BIN_PATH}" && \
-    chmod +x "${MMSEQS_BIN_PATH}" && \
-    ln -sf "${MMSEQS_BIN_PATH}" /usr/local/bin/mmseqs-latest
-
-# Prefer the new binary by default, but keep the conda one as fallback
-ENV PATH="/opt/mmseqs2:${PATH}"
-ENV MMSEQS_BIN=/usr/local/bin/mmseqs-latest
 
 # --- Python deps ---
 COPY requirements_cpu.txt /tmp/requirements_cpu.txt

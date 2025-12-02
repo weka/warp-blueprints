@@ -33,8 +33,15 @@ RUN echo "conda activate gpu-env" >> ~/.bashrc
 ENV PATH="/opt/conda/envs/gpu-env/bin:${PATH}"
 
 # ------------------------------------------------------------------
+# Install conda-only dependencies BEFORE pip
+# ------------------------------------------------------------------
+RUN mamba install -y -n gpu-env -c conda-forge \
+        "pdbfixer>=1.9" \
+        "numpy<2.0" \
+    && conda clean -afy
+
+# ------------------------------------------------------------------
 # Install PyTorch + CUDA 11.8
-# (adjust versions if you prefer different torch/torchvision/torchaudio)
 # ------------------------------------------------------------------
 RUN pip install --no-cache-dir \
     torch==2.2.1 \
@@ -55,7 +62,6 @@ WORKDIR /app
 RUN git clone https://github.com/aqlaboratory/openfold.git ./openfold
 
 WORKDIR /app/openfold
-# IMPORTANT: disable build isolation so torch is visible
 RUN pip install --no-cache-dir --no-build-isolation -e .
 
 # ------------------------------------------------------------------
@@ -64,15 +70,8 @@ RUN pip install --no-cache-dir --no-build-isolation -e .
 WORKDIR /app
 COPY run_pretrained_openfold.py .
 COPY run_gpu_inference.py .
+ENV PYTHONPATH="/app:${PYTHONPATH}"
 
-# Optional: set defaults for paths (you'll likely still override via env/args)
-# ENV FASTA_ROOT=/data/input_fasta_single \
-#     OUTPUT_ROOT=/data/predictions \
-#     PRECOMPUTED_ALIGNMENT_DIR=/data/databases/embeddings_output_dir \
-#     MMCIF_DIR=/data/databases/pdb_mmcif/mmcif_files \
-#     OPENFOLD_CHECKPOINT_PATH=/data/openfold_params/finetuning_ptm_1.pt
-
-# Non-root user
 RUN useradd -m -u 1000 appuser && chown -R appuser /app
 USER appuser
 

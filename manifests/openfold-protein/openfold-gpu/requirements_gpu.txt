@@ -1,8 +1,12 @@
-numpy
-scipy
-pandas
+# OpenFold runtime deps
+modelcif
 biopython
-tqdm
 ml-collections
 dm-tree
-protobuf
+p_tqdm
+immutabledict
+fsspec
+einops
+
+# Optional:
+deepspeed        # only if you use --use_deepspeed_evoformer_attention

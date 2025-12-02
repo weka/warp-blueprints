@@ -1,0 +1,53 @@
+apiVersion: warp.io/v1alpha1
+kind: WekaAppStore
+metadata:
+  name: weka-spark-stack
+  namespace: spark
+spec:
+  appStack:
+    components:
+      # 1. StorageClass + PVC for /mnt/weka
+      - name: spark-weka-storage
+        manifest: |
+          # StorageClass
+          apiVersion: storage.k8s.io/v1
+          kind: StorageClass
+          metadata:
+            name: weka-sc
+          provisioner: csi.weka.io
+          parameters:
+            filesystem: default
+          ---
+          # PVC
+          apiVersion: v1
+          kind: PersistentVolumeClaim
+          metadata:
+            name: spark-warehouse-pvc
+          spec:
+            storageClassName: weka-sc
+            accessModes: [ "ReadWriteMany" ]
+            resources:
+              requests:
+                storage: 1Ti
+
+      # 2. Spark Operator
+      - name: spark-operator
+        helm:
+          repo: https://googlecloudplatform.github.io/spark-on-k8s-operator
+          chart: spark-operator
+          version: <pin-a-version>
+          values: |
+            sparkJobNamespace: default
+            webhook:
+              enable: true
+
+      # 3. Example Spark job (SparkApplication)
+      - name: spark-example-job
+        manifest: |
+          apiVersion: "sparkoperator.k8s.io/v1beta2"
+          kind: SparkApplication
+          metadata:
+            name: weka-spark-example
+            namespace: default
+          spec:
+            # ... (as per the SparkApplication manifest above)

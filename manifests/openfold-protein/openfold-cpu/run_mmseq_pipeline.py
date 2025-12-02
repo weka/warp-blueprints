@@ -1,445 +1,445 @@
 #!/usr/bin/env python3
 import argparse
 import os
+import sys
 import subprocess
-import time
-import re
 from pathlib import Path
+from datetime import datetime
 from typing import Optional
 
 
-def log(msg: str):
-    ts = time.strftime("%Y-%m-%d %H:%M:%S")
+# ---------------------------------------------------------------------------
+# Logging helper
+# ---------------------------------------------------------------------------
+
+def log(msg: str) -> None:
+    ts = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
     print(f"[{ts}] [CPU] {msg}", flush=True)
 
 
-def find_fasta_for_protein(fasta_root: Path, protein: str) -> Path:
+# ---------------------------------------------------------------------------
+# Subprocess wrapper
+# ---------------------------------------------------------------------------
+
+def run_cmd(cmd, env=None, check=True) -> subprocess.CompletedProcess:
     """
-    If FASTA_ROOT/protein is a file → use it.
-    If it's a directory → pick first *.fasta, *.fa, *.faa.
+    Run a command with logging. Raises CalledProcessError if check=True and it fails.
     """
-    candidate = fasta_root / protein
-    if candidate.is_file():
-        return candidate
-
-    if candidate.is_dir():
-        for ext in ("*.fasta", "*.fa", "*.faa"):
-            files = list(candidate.glob(ext))
-            if files:
-                return files[0]
-
-    raise FileNotFoundError(
-        f"Could not find FASTA for protein '{protein}' under '{fasta_root}'. "
-        f"Checked '{candidate}'."
-    )
+    log(f"Running: {' '.join(str(c) for c in cmd)}")
+    return subprocess.run(cmd, env=env, check=check)
 
 
-# ------------------ MMSEQS UTILS: DB CHECKS & SIZE LOGGING ------------------ #
+# ---------------------------------------------------------------------------
+# Trivial single-sequence A3M writer
+# ---------------------------------------------------------------------------
 
-def ensure_mmseqs_db_ready(
-    mmseqs_bin: str,
-    database_path: Path,
-    tmpdir: Path,
-    threads: int,
-    env: dict,
-):
+def write_trivial_a3m(fasta_path: Path, a3m_out: Path) -> None:
     """
-    Sanity checks that the MMseqs DB exists, is a valid DB, and is indexed.
-    - Uses `mmseqs dbtype` to verify DB.
-    - If no .index file exists, runs `mmseqs createindex` (once).
+    When MMseqs pipeline fails or yields no hits, write a trivial
+    single-sequence A3M file from the query FASTA so that downstream
+    OpenFold / HHsearch still have something to consume.
     """
-    if not database_path.exists():
-        raise FileNotFoundError(f"MMseqs DB '{database_path}' does not exist")
+    log(f"Writing trivial single-sequence A3M to '{a3m_out}'")
+    a3m_out.parent.mkdir(parents=True, exist_ok=True)
 
-    cmd_dbtype = [mmseqs_bin, "dbtype", str(database_path)]
-    log(f"Checking MMseqs DB type: {' '.join(cmd_dbtype)}")
-    try:
-        result = subprocess.run(
-            cmd_dbtype,
-            check=True,
-            env=env,
-            capture_output=True,
-            text=True,
-        )
-    except subprocess.CalledProcessError as e:
-        log(f"ERROR: mmseqs dbtype failed for DB '{database_path}': {e}")
-        raise
-
-    dbtype_output = (result.stdout or "").strip()
-    if dbtype_output:
-        log(f"MMseqs DB type for '{database_path}': {dbtype_output}")
-
-    index_glob = list(database_path.parent.glob(database_path.name + "*.index"))
-    if index_glob:
-        log(f"DB appears indexed (found index files: {[p.name for p in index_glob]})")
-        return
-
-    log("No MMseqs index files found; creating index with `mmseqs createindex`")
-    cmd_createindex = [
-        mmseqs_bin,
-        "createindex",
-        str(database_path),
-        str(tmpdir),
-        "--threads",
-        str(threads),
-    ]
-    log(f"Running createindex: {' '.join(cmd_createindex)}")
-    subprocess.run(cmd_createindex, check=True, env=env)
-    log("MMseqs DB indexing complete.")
-
-
-def log_db_size(
-    mmseqs_bin: str,
-    db_path: Path,
-    env: dict,
-    label: str = "DB",
-) -> int:
-    """
-    Uses `mmseqs dbsize` to log DB stats and returns a best-effort
-    estimate of the number of entries.
-
-    If parsing fails, returns -1.
-    """
-    cmd_dbsize = [mmseqs_bin, "dbsize", str(db_path)]
-    log(f"Inspecting {label} size with: {' '.join(cmd_dbsize)}")
-    try:
-        result = subprocess.run(
-            cmd_dbsize,
-            check=True,
-            env=env,
-            capture_output=True,
-            text=True,
-        )
-    except subprocess.CalledProcessError as e:
-        log(f"WARNING: mmseqs dbsize failed for '{db_path}': {e}")
-        return -1
-
-    out = (result.stdout or "").strip()
-    if out:
-        log(f"{label} size info for '{db_path}':\n{out}")
-
-    m = re.search(r"(\d+)", out)
-    if not m:
-        return -1
-
-    try:
-        entry_count = int(m.group(1))
-    except ValueError:
-        entry_count = -1
-
-    return entry_count
-
-
-def remove_mmseqs_tmp_db(
-    mmseqs_bin: str,
-    db_path: Path,
-    env: dict,
-):
-    """
-    Remove a temporary MMseqs DB (and associated files) if it exists.
-
-    Uses `mmseqs rmdb` on db_path if we see any files matching db_path*.
-    Only call this for DBs in tmpdir (query/result/msa/a3m), NOT for the
-    main target database.
-    """
-    matches = list(db_path.parent.glob(db_path.name + "*"))
-    if not matches:
-        return
-
-    log(f"Cleaning up existing MMseqs tmp DB '{db_path}' (files: {[m.name for m in matches]})")
-    cmd_rmdb = [mmseqs_bin, "rmdb", str(db_path)]
-    try:
-        subprocess.run(cmd_rmdb, check=True, env=env)
-    except subprocess.CalledProcessError as e:
-        log(f"WARNING: mmseqs rmdb failed for '{db_path}': {e}")
-
-
-# ----------------------------- A3M FALLBACK HELPERS ---------------------------- #
-
-def write_single_sequence_a3m_from_fasta(fasta_path: Path, a3m_out: Path):
-    """
-    Read the first sequence from `fasta_path` and write a trivial
-    single-sequence A3M to `a3m_out`.
-    """
-    header = None
+    seq_id = None
     seq_lines = []
-
-    with fasta_path.open("r") as f:
+    with fasta_path.open() as f:
         for line in f:
             line = line.strip()
             if not line:
                 continue
             if line.startswith(">"):
-                if header is None:
-                    header = line[1:].strip() or "query"
-                else:
-                    # Already captured one sequence; ignore the rest
-                    break
+                if seq_id is None:
+                    seq_id = line[1:] if line[1:] else "query"
             else:
-                if header is None:
-                    header = "query"
                 seq_lines.append(line)
 
-    if header is None or not seq_lines:
-        raise RuntimeError(f"Could not extract a sequence from FASTA '{fasta_path}'")
+    if seq_id is None:
+        seq_id = "query"
+    seq = "".join(seq_lines) if seq_lines else ""
 
-    seq = "".join(seq_lines).replace(" ", "").upper()
-
-    log(f"Writing trivial single-sequence A3M to '{a3m_out}'")
-    with a3m_out.open("w") as out_f:
-        out_f.write(f">{header}\n")
-        out_f.write(seq + "\n")
+    with a3m_out.open("w") as out:
+        out.write(f">{seq_id}\n")
+        out.write(seq + "\n")
 
 
-# ----------------------------- MAIN MMSEQS PIPELINE --------------------------- #
+# ---------------------------------------------------------------------------
+# MMseqs2 pipeline
+# ---------------------------------------------------------------------------
+
+def check_mmseqs_db(mmseqs_bin: str, db_path: Path) -> None:
+    """
+    Log MMseqs db type to confirm DB is valid/indexed.
+    """
+    cmd = [mmseqs_bin, "dbtype", str(db_path)]
+    log(f"Checking MMseqs DB type: {' '.join(cmd)}")
+    try:
+        out = subprocess.check_output(cmd, stderr=subprocess.STDOUT)
+        log(f"MMseqs DB type for '{db_path}': {out.decode('utf-8', errors='ignore').strip()}")
+    except subprocess.CalledProcessError as e:
+        log(f"WARNING: mmseqs dbtype failed for '{db_path}': {e.output.decode('utf-8', errors='ignore')}")
+
+
+def safe_rmdb(mmseqs_bin: str, db_prefix: Path) -> None:
+    """
+    If an MMseqs DB exists (by prefix), remove it with rmdb.
+    """
+    existing = []
+    for suffix in ["", ".dbtype", ".index", ".lookup", "_h", "_h.dbtype", "_h.index"]:
+        p = db_prefix.with_name(db_prefix.name + suffix)
+        if p.exists():
+            existing.append(p.name)
+
+    if existing:
+        log(f"Cleaning up existing MMseqs tmp DB '{db_prefix}' (files: {existing})")
+        try:
+            run_cmd([mmseqs_bin, "rmdb", str(db_prefix)], check=True)
+        except subprocess.CalledProcessError as e:
+            log(f"WARNING: mmseqs rmdb failed for '{db_prefix}': {e}")
+
 
 def run_mmseqs(
-    mmseqs_bin: str,
     fasta_path: Path,
-    database_path: Path,
-    out_dir: Path,
-    tmpdir: Path,
-    threads: int = 8,
-    protein_id: Optional[str] = None,
+    uniref_db: Path,
+    tmp_dir: Path,
+    output_dir: Path,
+    mmseqs_bin: str,
+    threads: int = 32,
     db_load_mode: int = 2,
-):
+    search_evalue: float = 1.0,
+    min_hit_cov: float = 0.3,
+    result2msa_max_seq_id: float = 0.95,
+) -> Path:
     """
-    CPU-ONLY MMseqs2 alignment pipeline for OpenFold.
+    CPU-only MMseqs2 pipeline:
 
-    Pipeline:
-
-      1) createdb <query.fasta> <query_db>
-      2) search <query_db> <database> <result_db> <tmpdir> --threads N [--db-load-mode M]
-      3) result2msa <query_db> <database> <result_db> <msa_db>
-      4) convertmsa <msa_db> <msa_a3m_db> --format-output a3m
-      5) convert2fasta <msa_a3m_db> <protein>.a3m
-
-    If anything in steps 3–5 fails, fall back to a trivial single-sequence A3M.
+      1) createdb (FASTA → queryDB)
+      2) search (queryDB vs UniRef/MMseqs DB)
+      3) result2msa (→ A3M DB, msa-format-mode=6)
+      4) unpackdb (A3M DB → per-query .a3m file)
     """
-    out_dir.mkdir(parents=True, exist_ok=True)
+    fasta_path = fasta_path.resolve()
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
 
-    base = protein_id or fasta_path.stem
+    protein_name = fasta_path.name
+    log(f"Starting CPU-only MMseqs2 pipeline for {protein_name}")
+    log(f"Using FASTA: {fasta_path}")
 
-    query_db = tmpdir / f"{base}_queryDB"
-    result_db = tmpdir / f"{base}_resultDB"
-    msa_db = tmpdir / f"{base}_msaDB"
-    msa_a3m_db = tmpdir / f"{base}_msaA3M_DB"
-    a3m_out = out_dir / f"{base}.a3m"
+    # ------------------------------------------------------------------
+    # Paths
+    # ------------------------------------------------------------------
+    query_db = tmp_dir / f"{protein_name}_queryDB"
+    result_db = tmp_dir / f"{protein_name}_resultDB"
+    msa_db = tmp_dir / f"{protein_name}_msaA3M_DB"
+    unpack_dir = tmp_dir / f"{protein_name}_a3m_tmp"
 
-    env = os.environ.copy()
-    env["TMPDIR"] = str(tmpdir)
+    final_a3m = output_dir / f"{protein_name}.a3m"
 
-    ensure_mmseqs_db_ready(mmseqs_bin, database_path, tmpdir, threads, env)
+    # ------------------------------------------------------------------
+    # Step 0: Check UniRef DB
+    # ------------------------------------------------------------------
+    check_mmseqs_db(mmseqs_bin, uniref_db)
 
-    # Clean up any old tmp DBs
-    remove_mmseqs_tmp_db(mmseqs_bin, result_db, env)
-    remove_mmseqs_tmp_db(mmseqs_bin, msa_db, env)
-    remove_mmseqs_tmp_db(mmseqs_bin, msa_a3m_db, env)
+    # ------------------------------------------------------------------
+    # Step 1: Clean any old tmp DBs
+    # ------------------------------------------------------------------
+    safe_rmdb(mmseqs_bin, result_db)
+    safe_rmdb(mmseqs_bin, msa_db)
+    if unpack_dir.exists():
+        log(f"Removing old unpack dir '{unpack_dir}'")
+        for child in unpack_dir.iterdir():
+            try:
+                child.unlink()
+            except Exception:
+                pass
+        try:
+            unpack_dir.rmdir()
+        except Exception:
+            pass
 
-    # 1) createdb
+    # ------------------------------------------------------------------
+    # Step 2: createdb
+    # ------------------------------------------------------------------
     cmd_createdb = [
-        mmseqs_bin, "createdb",
+        mmseqs_bin,
+        "createdb",
         str(fasta_path),
         str(query_db),
     ]
-    log("Running mmseqs createdb")
-    subprocess.run(cmd_createdb, check=True, env=env)
+    run_cmd(cmd_createdb)
 
-    # 2) search
+    # ------------------------------------------------------------------
+    # Step 3: search (with tunable evalue / coverage / db-load-mode)
+    # ------------------------------------------------------------------
+    log(f"Running mmseqs search (CPU, db-load-mode={db_load_mode})")
     cmd_search = [
-        mmseqs_bin, "search",
+        mmseqs_bin,
+        "search",
         str(query_db),
-        str(database_path),
+        str(uniref_db),
         str(result_db),
-        str(tmpdir),
+        str(tmp_dir),
         "--threads", str(threads),
         "--db-load-mode", str(db_load_mode),
+        # Tunable thresholds for depth vs quality:
+        "-e", str(search_evalue),
+        "-c", str(min_hit_cov),
+        "--cov-mode", "0",
     ]
-    log(f"Running mmseqs search (CPU, db-load-mode={db_load_mode})")
-    subprocess.run(cmd_search, check=True, env=env)
+    run_cmd(cmd_search)
 
-    # 3) result2msa – build MSA DB with real multi-sequence depth
+    # ------------------------------------------------------------------
+    # Optional: dbsize on result DB (purely informative)
+    # ------------------------------------------------------------------
+    log(f"Inspecting Result DB size with: {mmseqs_bin} dbsize {result_db}")
+    try:
+        dbsize_out = subprocess.check_output([mmseqs_bin, "dbsize", str(result_db)],
+                                             stderr=subprocess.STDOUT)
+        dbsize_text = dbsize_out.decode("utf-8", errors="ignore").strip()
+        log(f"Result DB size info:\n{dbsize_text}")
+    except subprocess.CalledProcessError as e:
+        log(f"WARNING: mmseqs dbsize failed for '{result_db}': {e}")
+
+    # ------------------------------------------------------------------
+    # Step 4: result2msa (→ A3M DB, msa-format-mode=6)
+    # ------------------------------------------------------------------
+    log("Running mmseqs result2msa (→ A3M DB)")
     cmd_result2msa = [
-        mmseqs_bin, "result2msa",
+        mmseqs_bin,
+        "result2msa",
         str(query_db),
-        str(database_path),
+        str(uniref_db),
         str(result_db),
         str(msa_db),
         "--threads", str(threads),
+        "--db-load-mode", str(db_load_mode),
+        "--msa-format-mode", "6",                    # A3M-like DB
+        "--max-seq-id", str(result2msa_max_seq_id),  # keep more similar seqs
+        "--filter-msa", "0",                         # don't aggressively thin MSAs here
     ]
-    log("Running mmseqs result2msa")
+
     try:
-        subprocess.run(cmd_result2msa, check=True, env=env)
+        run_cmd(cmd_result2msa)
     except subprocess.CalledProcessError as e:
-        log(f"ERROR: mmseqs result2msa failed: {e}")
-        log("Falling back to trivial single-sequence A3M from FASTA.")
-        write_single_sequence_a3m_from_fasta(fasta_path, a3m_out)
-        return a3m_out
+        log(f"ERROR in result2msa: {e}")
+        # Fallback: trivial A3M
+        write_trivial_a3m(fasta_path, final_a3m)
+        return final_a3m
 
-    # MSA depth sanity/logging
-    seq_count = log_db_size(mmseqs_bin, msa_db, env, label="MSA DB")
-    if seq_count == 0:
-        log("WARNING: MSA DB appears to have 0 sequences (no hits). "
-            "A3M will effectively be single-sequence.")
-    elif seq_count == 1:
-        log("WARNING: MSA DB appears to contain only 1 sequence (likely just the query). "
-            "Alignment depth is poor.")
-    elif seq_count > 1:
-        log(f"MSA sanity check: ~{seq_count} sequences detected in MSA DB.")
-
-    # 4) convertmsa – MSA DB → A3M-encoded DB
-    cmd_convertmsa = [
-        mmseqs_bin, "convertmsa",
+    # ------------------------------------------------------------------
+    # Step 5: unpackdb (A3M DB → .a3m files)
+    # ------------------------------------------------------------------
+    log("Running mmseqs unpackdb (A3M DB → .a3m files)")
+    cmd_unpack = [
+        mmseqs_bin,
+        "unpackdb",
         str(msa_db),
-        str(msa_a3m_db),
-        "--format-output", "a3m",
+        str(unpack_dir),
+        "--unpack-name-mode", "0",
+        "--unpack-suffix", ".a3m",
     ]
-    log("Running mmseqs convertmsa (MSA DB → A3M DB)")
+
     try:
-        subprocess.run(cmd_convertmsa, check=True, env=env)
+        run_cmd(cmd_unpack)
     except subprocess.CalledProcessError as e:
-        log(f"ERROR: mmseqs convertmsa failed: {e}")
-        log("Falling back to trivial single-sequence A3M from FASTA.")
-        write_single_sequence_a3m_from_fasta(fasta_path, a3m_out)
-        return a3m_out
+        log(f"ERROR in unpackdb: {e}")
+        # Fallback: trivial A3M
+        write_trivial_a3m(fasta_path, final_a3m)
+        return final_a3m
 
-    # 5) convert2fasta – A3M DB → plain text A3M file
-    cmd_convert2fasta = [
-        mmseqs_bin, "convert2fasta",
-        str(msa_a3m_db),
-        str(a3m_out),
-    ]
-    log("Running mmseqs convert2fasta (A3M DB → A3M file)")
-    try:
-        subprocess.run(cmd_convert2fasta, check=True, env=env)
-    except subprocess.CalledProcessError as e:
-        log(f"ERROR: mmseqs convert2fasta failed: {e}")
-        log("Falling back to trivial single-sequence A3M from FASTA.")
-        write_single_sequence_a3m_from_fasta(fasta_path, a3m_out)
-        return a3m_out
+    # Pick the first .a3m from unpack_dir
+    if not unpack_dir.exists():
+        log(f"ERROR: unpack dir '{unpack_dir}' does not exist after unpackdb. Falling back to trivial A3M.")
+        write_trivial_a3m(fasta_path, final_a3m)
+        return final_a3m
 
-    return a3m_out
+    a3m_files = sorted(unpack_dir.glob("*.a3m"))
+    if not a3m_files:
+        log(f"ERROR: no .a3m files found in '{unpack_dir}'. Falling back to trivial A3M.")
+        write_trivial_a3m(fasta_path, final_a3m)
+        return final_a3m
+
+    chosen_a3m = a3m_files[0]
+    log(f"Using A3M file '{chosen_a3m}' → '{final_a3m}'")
+    final_a3m.parent.mkdir(parents=True, exist_ok=True)
+    final_a3m.write_bytes(chosen_a3m.read_bytes())
+
+    return final_a3m
 
 
-def run_hhsearch(hhsearch_bin: str, a3m_path: Path, pdb70_db: Path, out_dir: Path):
-    """Run HHsearch on generated A3M."""
-    hhr_path = out_dir / "pdb70.hhr"
+# ---------------------------------------------------------------------------
+# HHsearch helper
+# ---------------------------------------------------------------------------
+
+def run_hhsearch(
+    hhsearch_bin: str,
+    a3m_path: Path,
+    pdb70_db: Path,
+    hhr_out: Path,
+) -> None:
+    """
+    Run HHsearch on the A3M against pdb70 HHM database.
+    (You said you already fixed the PDB70 pathing; we keep it simple here.)
+    """
+    hhr_out.parent.mkdir(parents=True, exist_ok=True)
     cmd = [
         hhsearch_bin,
         "-i", str(a3m_path),
-        "-o", str(hhr_path),
+        "-o", str(hhr_out),
         "-d", str(pdb70_db),
     ]
     log("Running HHsearch")
-    subprocess.run(cmd, check=True)
-    return hhr_path
+    run_cmd(cmd)
 
 
-def main():
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+def parse_args(argv=None):
     parser = argparse.ArgumentParser(
-        description="CPU MMseqs2 + HHsearch alignment pipeline for OpenFold."
+        description="CPU-side MMseqs2 + HHsearch pipeline for OpenFold."
     )
+
     parser.add_argument(
         "--protein-id",
         required=True,
-        help="Protein identifier (e.g. protein1 or protein1.fasta)."
+        help="Protein FASTA filename (e.g. protein1.fasta) under --fasta-root.",
     )
     parser.add_argument(
         "--fasta-root",
-        default=os.environ.get("FASTA_ROOT", "/data/input_fasta_single"),
-        help="Root directory or parent of FASTA files.",
+        type=Path,
+        default=Path("/data/input_fasta_single"),
+        help="Root directory containing input FASTA files.",
     )
     parser.add_argument(
         "--precomputed-alignments-dir",
-        default=os.environ.get("PRECOMPUTED_ALIGNMENT_DIR", "/data/databases/embeddings_output_dir"),
-        help="Output root for precomputed alignments.",
+        type=Path,
+        default=Path("/data/databases/embeddings_output_dir"),
+        help="Root directory to write A3M/HHR outputs (per-protein subdir).",
     )
     parser.add_argument(
-        "--mmseqs-db",
-        default=os.environ.get("MMSEQS_DB", "/data/databases/uniref50/uniref50_mmseqs"),
-        help="Path to MMseqs2 target DB (e.g. UniRef50).",
+        "--uniref50-db",
+        type=Path,
+        default=Path("/data/databases/uniref50/uniref50_mmseqs"),
+        help="MMseqs2 UniRef50 DB prefix (no extension).",
+    )
+    parser.add_argument(
+        "--tmp-dir",
+        type=Path,
+        default=Path("/data/tmp"),
+        help="Temporary directory for MMseqs2 DBs.",
+    )
+
+    # MMseqs2 binary / tuning
+    parser.add_argument(
+        "--mmseqs-bin",
+        type=str,
+        default=os.environ.get("MMSEQS_BIN", "/usr/local/bin/mmseqs-latest"),
+        help="Path to mmseqs2 binary. Default: /usr/local/bin/mmseqs-latest or $MMSEQS_BIN.",
+    )
+    parser.add_argument(
+        "--mmseqs-threads",
+        type=int,
+        default=32,
+        help="Number of threads for MMseqs2.",
+    )
+    parser.add_argument(
+        "--mmseqs-db-load-mode",
+        type=int,
+        default=2,
+        help="MMseqs2 --db-load-mode (2 = direct read from storage).",
+    )
+    parser.add_argument(
+        "--search-evalue",
+        type=float,
+        default=1.0,
+        help="MMseqs2 search E-value cutoff (passed to -e). Higher = more hits. Default: 1.0",
+    )
+    parser.add_argument(
+        "--min-hit-cov",
+        type=float,
+        default=0.3,
+        help="Minimum query coverage for hits (0–1, passed to -c). Default: 0.3.",
+    )
+    parser.add_argument(
+        "--result2msa-max-seq-id",
+        type=float,
+        default=0.95,
+        help="Maximum seq identity in result2msa (0–1, --max-seq-id). Default: 0.95.",
+    )
+
+    # HHsearch / pdb70
+    parser.add_argument(
+        "--hhsearch-bin",
+        type=str,
+        default="hhsearch",
+        help="Path to hhsearch binary (from hhsuite).",
     )
     parser.add_argument(
         "--pdb70-db",
-        default=os.environ.get("PDB70_DB", "/data/databases/pdb70/pdb70"),
-        help="Path to PDB70 HHsearch DB.",
-    )
-    parser.add_argument(
-        "--mmseqs-bin",
-        default=os.environ.get("MMSEQS_BIN", "/opt/conda/envs/cpu-env/bin/mmseqs"),
-        help="Path to mmseqs binary.",
-    )
-    parser.add_argument(
-        "--hhsearch-bin",
-        default=os.environ.get("HHSEARCH_BIN", "/opt/conda/envs/cpu-env/bin/hhsearch"),
-        help="Path to hhsearch binary.",
-    )
-    parser.add_argument(
-        "--threads",
-        type=int,
-        default=int(os.environ.get("MMSEQS_THREADS", "32")),
-        help="Number of CPU threads for MMseqs2.",
-    )
-    parser.add_argument(
-        "--db-load-mode",
-        type=int,
-        default=int(os.environ.get("MMSEQS_DB_LOAD_MODE", "2")),
-        help="MMseqs --db-load-mode (0:auto, 1:fread, 2:mmap, 3:mmap+touch; default: 2).",
-    )
-    parser.add_argument(
-        "--tmpdir",
-        default=os.environ.get("TMPDIR", "/data/tmp"),
-        help="Temporary directory.",
+        type=Path,
+        default=Path("/data/databases/pdb70/pdb70"),
+        help="pdb70 HHM database prefix (no extension).",
     )
 
-    args = parser.parse_args()
+    return parser.parse_args(argv)
+
+
+def main(argv=None):
+    args = parse_args(argv)
 
     protein_id = args.protein_id
-    fasta_root = Path(args.fasta_root)
-    mmseqs_db = Path(args.mmseqs_db)
-    pdb70_db = Path(args.pdb70_db)
-    tmpdir = Path(args.tmpdir)
-    tmpdir.mkdir(parents=True, exist_ok=True)
+    fasta_path = args.fasta_root / protein_id
 
-    protein_align_dir = Path(args.precomputed_alignments_dir) / protein_id
+    if not fasta_path.is_file():
+        log(f"ERROR: FASTA file not found: {fasta_path}")
+        sys.exit(1)
 
-    log(f"Starting CPU-only MMseqs2 pipeline for {protein_id}")
-    start_time = time.time()
+    # Where to put A3M/HHR for this protein
+    protein_align_dir = args.precomputed_alignments_dir / protein_id
+    protein_align_dir.mkdir(parents=True, exist_ok=True)
 
-    try:
-        fasta_path = find_fasta_for_protein(fasta_root, protein_id)
-        log(f"Using FASTA: {fasta_path}")
+    a3m_out = protein_align_dir / f"{protein_id}.a3m"
+    hhr_out = protein_align_dir / "pdb70.hhr"
 
-        a3m_path = run_mmseqs(
-            args.mmseqs_bin,
-            fasta_path,
-            mmseqs_db,
-            protein_align_dir,
-            tmpdir,
-            threads=args.threads,
-            protein_id=protein_id,
-            db_load_mode=args.db_load_mode,
-        )
+    # If A3M already exists, you *could* skip recompute. For now, always recompute.
+    mmseqs_bin = args.mmseqs_bin
 
-        hhr_path = run_hhsearch(
-            args.hhsearch_bin,
-            a3m_path,
-            pdb70_db,
-            protein_align_dir,
-        )
+    # If mmseqs-latest is not found, fall back to "mmseqs" in PATH
+    if not Path(mmseqs_bin).exists():
+        log(f"WARNING: mmseqs_bin '{mmseqs_bin}' not found. Falling back to 'mmseqs' in PATH.")
+        mmseqs_bin = "mmseqs"
 
-        log(f"Generated alignments for {protein_id}")
-        log(f"A3M: {a3m_path}")
-        log(f"HHR: {hhr_path}")
+    # Run MMseqs2 alignment pipeline
+    a3m_path = run_mmseqs(
+        fasta_path=fasta_path,
+        uniref_db=args.uniref50_db,
+        tmp_dir=args.tmp_dir,
+        output_dir=protein_align_dir,
+        mmseqs_bin=mmseqs_bin,
+        threads=args.mmseqs_threads,
+        db_load_mode=args.mmseqs_db_load_mode,
+        search_evalue=args.search_evalue,
+        min_hit_cov=args.min_hit_cov,
+        result2msa_max_seq_id=args.result2msa_max_seq_id,
+    )
 
-    except Exception as e:
-        log(f"ERROR in pipeline for '{protein_id}': {e}")
-        raise
+    # Run HHsearch using the generated A3M
+    run_hhsearch(
+        hhsearch_bin=args.hhsearch_bin,
+        a3m_path=a3m_path,
+        pdb70_db=args.pdb70_db,
+        hhr_out=hhr_out,
+    )
 
-    log(f"MMseqs2 pipeline for '{protein_id}' completed in {time.time() - start_time:.1f} seconds")
+    log(f"Generated alignments for {protein_id}")
+    log(f"A3M: {a3m_path}")
+    log(f"HHR: {hhr_out}")
+    log("Pipeline completed.")
 
 
 if __name__ == "__main__":
-    os.environ["LD_LIBRARY_PATH"] = "/lib/x86_64-linux-gnu:" + os.environ.get("LD_LIBRARY_PATH", "")
-    os.environ["LIBRARY_PATH"] = "/lib/x86_64-linux-gnu:" + os.environ.get("LIBRARY_PATH", "")
     main()

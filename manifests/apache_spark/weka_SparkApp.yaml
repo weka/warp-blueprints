@@ -1,0 +1,59 @@
+apiVersion: "sparkoperator.k8s.io/v1beta2"
+kind: SparkApplication
+metadata:
+  name: weka-spark-example
+  namespace: spark
+spec:
+  type: Scala
+  mode: cluster
+
+  image: your-registry/spark-weka:3.5.5
+  imagePullPolicy: IfNotPresent
+
+  mainClass: org.apache.spark.examples.SparkPi
+  mainApplicationFile: "local:///opt/spark/spark/examples/jars/spark-examples_2.12-3.5.5.jar"
+
+  sparkVersion: "3.5.5"
+
+  restartPolicy:
+    type: OnFailure
+    onFailureRetries: 3
+    onFailureRetryInterval: 10
+    onSubmissionFailureRetries: 5
+    onSubmissionFailureRetryInterval: 20
+
+  # Use a service account that has an IAM role for S3 (IRSA) if you're on EKS
+  driver:
+    cores: 1
+    memory: "2g"
+    serviceAccount: spark-sa
+    volumeMounts:
+      - name: weka-volume
+        mountPath: /mnt/weka
+
+  executor:
+    cores: 2
+    instances: 3
+    memory: "4g"
+    serviceAccount: spark-sa
+    volumeMounts:
+      - name: weka-volume
+        mountPath: /mnt/weka
+
+  volumes:
+    - name: weka-volume
+      persistentVolumeClaim:
+        claimName: spark-warehouse-pvc
+
+  # Spark configs – this is effectively your spark-defaults.conf
+  sparkConf:
+    spark.hadoop.fs.s3a.impl: "org.apache.hadoop.fs.s3a.S3AFileSystem"
+    spark.hadoop.fs.AbstractFileSystem.s3a.impl: "org.apache.hadoop.fs.s3a.S3A"
+    spark.hadoop.fs.s3a.statistics: "all"
+    spark.hadoop.fs.s3a.aws.credentials.provider: "com.amazonaws.auth.DefaultAWSCredentialsProviderChain"
+    spark.sql.warehouse.dir: "/mnt/weka/warehouse"
+    javax.jdo.option.ConnectionURL: "jdbc:derby:/mnt/weka/metastore_db;create=true"
+
+  # If you want to pass extra JVM opts globally (similar to SPARK_DAEMON_JAVA_OPTS)
+  sparkConfigMap: ""
+  sparkEnvironmentConfigMap: ""

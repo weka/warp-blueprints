@@ -1,0 +1,21 @@
+# argo-workflow-role.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: argo-workflow-role
+  namespace: openfold
+rules:
+  # Argo needs to create & manage pods that run each step
+  - apiGroups: [""]
+    resources: ["pods", "pods/log"]
+    verbs: ["get", "watch", "list", "create", "update", "patch", "delete"]
+
+  # Usually helpful so workflows can manage their own PVCs & ConfigMaps
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims", "configmaps"]
+    verbs: ["get", "watch", "list", "create", "update", "patch", "delete"]
+
+  # Optional but common: manage workflow CRDs in this namespace
+  - apiGroups: ["argoproj.io"]
+    resources: ["workflows", "workflowtemplates", "cronworkflows"]
+    verbs: ["get", "watch", "list", "create", "update", "patch", "delete"]

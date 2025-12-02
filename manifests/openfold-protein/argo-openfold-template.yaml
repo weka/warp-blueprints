@@ -2,124 +2,261 @@ apiVersion: argoproj.io/v1alpha1
 kind: WorkflowTemplate
 metadata:
   name: openfold-pipeline
+  namespace: openfold
 spec:
-  # NEW: top-level entrypoint now runs a batch of proteins
-  entrypoint: openfold-batch
+  entrypoint: openfold-pipeline
+  serviceAccountName: argo-workflow-sa
+
+  # ---------------------------------------------------------------------------
+  # Top-level parameters (editable in Argo UI) with defaults
+  # ---------------------------------------------------------------------------
   arguments:
     parameters:
-      # JSON array of protein IDs to process
-      # You can override this when submitting the workflow
-      - name: protein-ids
-        value: '["protein1.fasta", "protein2.fasta"]'
+      # CPU / MMseqs2-related
+      - name: protein-id
+        value: "protein1.fasta"
+        description: "FASTA filename or protein ID under FASTA root (e.g. protein1.fasta)."
+
+      - name: uniref50-db
+        value: "/data/databases/uniref50/uniref50_mmseqs"
+        description: "MMseqs2 UniRef50 DB prefix (no extension)."
+
+      - name: pdb70-db
+        value: "/data/databases/pdb70/pdb70"
+        description: "pdb70 HHM database prefix (no extension)."
+
+      - name: mmseqs-bin
+        value: "/usr/local/bin/mmseqs-latest"
+        description: "Path to the mmseqs2 binary inside the CPU container."
+
+      - name: mmseqs-threads
+        value: "32"
+        description: "Number of CPU threads for MMseqs2 (--mmseqs-threads)."
+
+      - name: mmseqs-db-load-mode
+        value: "2"
+        description: "MMseqs2 --db-load-mode (2 = read directly from storage)."
+
+      - name: search-evalue
+        value: "1.0"
+        description: "MMseqs2 search E-value cutoff (-e). Higher = more hits."
+
+      - name: min-hit-cov
+        value: "0.3"
+        description: "Minimum query coverage (-c) for hits (0–1)."
+
+      - name: result2msa-max-seq-id
+        value: "0.95"
+        description: "result2msa --max-seq-id (0–1). Higher = more similar sequences kept."
+
+      # GPU / OpenFold-related – defaults mirror your GPU script
+      - name: fasta-root
+        value: "/data/input_fasta_single"
+        description: "Root directory containing protein FASTA files (--fasta-root)."
+
+      - name: output-root
+        value: "/data/predictions"
+        description: "Root directory for model prediction outputs (--output-root)."
+
+      - name: precomputed-alignments-dir
+        value: "/data/databases/embeddings_output_dir"
+        description: "Where CPU step wrote precomputed A3M/HHR files (--precomputed-alignments-dir)."
+
+      - name: mmcif-dir
+        value: "/data/databases/pdb_mmcif/mmcif_files"
+        description: "Directory containing PDB mmCIF files (--mmcif-dir)."
+
+      - name: openfold-checkpoint-path
+        value: "openfold/resources/openfold_msa_params/openfold_params/finetuning_ptm_1.pt"
+        description: "OpenFold checkpoint path (--openfold-checkpoint-path)."
+
+      - name: config-preset
+        value: "model_1_ptm"
+        description: "OpenFold config preset (--config-preset)."
+
+      - name: model-device
+        value: "cuda:0"
+        description: "Model device, e.g. cuda:0 (--model-device)."
+
       - name: gpu-id
-        value: "0"
+        value: ""
+        description: "Optional GPU ID for CUDA_VISIBLE_DEVICES (--gpu-id). Leave empty to use default visibility."
 
-  # Optional: global parallelism cap (max pods at once)
-  # parallelism: 4
+      - name: run-pretrained-script
+        value: "/app/run_pretrained_openfold.py"
+        description: "Path to run_pretrained_openfold.py inside the container (--run-pretrained-script)."
 
-  # Shared volumes for all templates
-  volumes:
-    - name: openfold-data-pvc
-      persistentVolumeClaim:
-        claimName: openfold-data-pvc
-
+  # ---------------------------------------------------------------------------
+  # DAG: CPU (MMseqs2+HHsearch) → GPU (OpenFold)
+  # ---------------------------------------------------------------------------
   templates:
-    # ------------------------------------------------------------------------
-    # NEW: Batch wrapper – fans out over multiple protein IDs
-    # ------------------------------------------------------------------------
-    - name: openfold-batch
-      inputs:
-        parameters:
-          - name: protein-ids    # JSON array: ["p1", "p2", ...]
-          - name: gpu-id
-      steps:
-        - - name: per-protein
-            template: openfold-pipeline
-            arguments:
-              parameters:
-                - name: protein-id
-                  value: "{{item}}"                      # each protein ID
-                - name: gpu-id
-                  value: "{{inputs.parameters.gpu-id}}"
-            # Fan-out over the protein list
-            withParam: "{{inputs.parameters.protein-ids}}"
-
-    # ------------------------------------------------------------------------
-    # Single-protein pipeline: CPU step then GPU step
-    # ------------------------------------------------------------------------
     - name: openfold-pipeline
-      inputs:
-        parameters:
-          - name: protein-id
-          - name: gpu-id
-      steps:
-        - - name: cpu-preprocess
-            template: gpu-mmseq2-preprocess
+      dag:
+        tasks:
+          - name: mmseq2-cpu
+            template: mmseq2-cpu
             arguments:
               parameters:
                 - name: protein-id
-                  value: "{{inputs.parameters.protein-id}}"
+                  value: "{{workflow.parameters.protein-id}}"
+                - name: uniref50-db
+                  value: "{{workflow.parameters.uniref50-db}}"
+                - name: pdb70-db
+                  value: "{{workflow.parameters.pdb70-db}}"
+                - name: mmseqs-bin
+                  value: "{{workflow.parameters.mmseqs-bin}}"
+                - name: mmseqs-threads
+                  value: "{{workflow.parameters.mmseqs-threads}}"
+                - name: mmseqs-db-load-mode
+                  value: "{{workflow.parameters.mmseqs-db-load-mode}}"
+                - name: search-evalue
+                  value: "{{workflow.parameters.search-evalue}}"
+                - name: min-hit-cov
+                  value: "{{workflow.parameters.min-hit-cov}}"
+                - name: result2msa-max-seq-id
+                  value: "{{workflow.parameters.result2msa-max-seq-id}}"
 
-        - - name: gpu-inference
-            template: gpu-inference
+          - name: gpu-openfold
+            template: gpu-openfold
+            dependencies: [mmseq2-cpu]
             arguments:
               parameters:
                 - name: protein-id
-                  value: "{{inputs.parameters.protein-id}}"
+                  value: "{{workflow.parameters.protein-id}}"
+                - name: fasta-root
+                  value: "{{workflow.parameters.fasta-root}}"
+                - name: output-root
+                  value: "{{workflow.parameters.output-root}}"
+                - name: precomputed-alignments-dir
+                  value: "{{workflow.parameters.precomputed-alignments-dir}}"
+                - name: mmcif-dir
+                  value: "{{workflow.parameters.mmcif-dir}}"
+                - name: openfold-checkpoint-path
+                  value: "{{workflow.parameters.openfold-checkpoint-path}}"
+                - name: config-preset
+                  value: "{{workflow.parameters.config-preset}}"
+                - name: model-device
+                  value: "{{workflow.parameters.model-device}}"
                 - name: gpu-id
-                  value: "{{inputs.parameters.gpu-id}}"
+                  value: "{{workflow.parameters.gpu-id}}"
+                - name: run-pretrained-script
+                  value: "{{workflow.parameters.run-pretrained-script}}"
 
-    # ------------------------------------------------------------------------
-    # CPU-only alignment step (per protein)
-    # ------------------------------------------------------------------------
-    - name: gpu-mmseq2-preprocess
+    # -----------------------------------------------------------------------
+    # CPU template – aligned to run_mmseq_pipeline.py
+    # -----------------------------------------------------------------------
+    - name: mmseq2-cpu
       inputs:
         parameters:
           - name: protein-id
+          - name: uniref50-db
+          - name: pdb70-db
+          - name: mmseqs-bin
+          - name: mmseqs-threads
+          - name: mmseqs-db-load-mode
+          - name: search-evalue
+          - name: min-hit-cov
+          - name: result2msa-max-seq-id
       container:
-        image: wekachrisjen/warp-openfold-cpu:v0.11
-        command: ["python", "run_mmseq_pipeline.py"]
+        image: wekachrisjen/warp-openfold-cpu:v0.16
+        imagePullPolicy: IfNotPresent
+        command: ["bash", "-c"]
         args:
-          - "--protein-id"
-          - "{{inputs.parameters.protein-id}}"
+          - |
+            set -euo pipefail
+
+            echo "[CPU] Running run_mmseq_pipeline.py for {{inputs.parameters.protein-id}}"
+
+            python3 /app/run_mmseq_pipeline.py \
+              --protein-id "{{inputs.parameters.protein-id}}" \
+              --fasta-root /data/input_fasta_single \
+              --precomputed-alignments-dir /data/databases/embeddings_output_dir \
+              --uniref50-db "{{inputs.parameters.uniref50-db}}" \
+              --tmp-dir /data/tmp \
+              --mmseqs-bin "{{inputs.parameters.mmseqs-bin}}" \
+              --mmseqs-threads {{inputs.parameters.mmseqs-threads}} \
+              --mmseqs-db-load-mode {{inputs.parameters.mmseqs-db-load-mode}} \
+              --search-evalue {{inputs.parameters.search-evalue}} \
+              --min-hit-cov {{inputs.parameters.min-hit-cov}} \
+              --result2msa-max-seq-id {{inputs.parameters.result2msa-max-seq-id}} \
+              --hhsearch-bin hhsearch \
+              --pdb70-db "{{inputs.parameters.pdb70-db}}"
+
         resources:
           requests:
             cpu: "8"
-            memory: "16Gi"
-          limits:
-            cpu: "16"
             memory: "32Gi"
+          limits:
+            cpu: "32"
+            memory: "64Gi"
+
         volumeMounts:
-          - name: openfold-data-pvc
+          - name: openfold-data
             mountPath: /data
 
-    # ------------------------------------------------------------------------
-    # GPU-only inference step (per protein)
-    # ------------------------------------------------------------------------
-    - name: gpu-inference
+      volumes:
+        - name: openfold-data
+          persistentVolumeClaim:
+            claimName: openfold-data-pvc
+
+    # -----------------------------------------------------------------------
+    # GPU template – aligned to run_gpu_inference.py
+    # -----------------------------------------------------------------------
+    - name: gpu-openfold
       inputs:
         parameters:
           - name: protein-id
+          - name: fasta-root
+          - name: output-root
+          - name: precomputed-alignments-dir
+          - name: mmcif-dir
+          - name: openfold-checkpoint-path
+          - name: config-preset
+          - name: model-device
           - name: gpu-id
+          - name: run-pretrained-script
       container:
-        image: wekachrisjen/warp-openfold-gpu:v0.1
-        command: ["python", "run_gpu_inference.py"]
+        image: wekachrisjen/warp-openfold-gpu:v0.2
+        imagePullPolicy: IfNotPresent
+        command: ["bash", "-c"]
         args:
-          - "--protein-id"
-          - "{{inputs.parameters.protein-id}}"
-          - "--gpu-id"
-          - "{{inputs.parameters.gpu-id}}"
+          - |
+            set -euo pipefail
+
+            echo "[GPU] Running run_gpu_inference.py for {{inputs.parameters.protein-id}}"
+
+            GPU_ID_PARAM=""
+            if [[ -n "{{inputs.parameters.gpu-id}}" ]]; then
+              GPU_ID_PARAM="--gpu-id {{inputs.parameters.gpu-id}}"
+            fi
+
+            python3 /app/run_gpu_inference.py \
+              --protein-id "{{inputs.parameters.protein-id}}" \
+              --fasta-root "{{inputs.parameters.fasta-root}}" \
+              --output-root "{{inputs.parameters.output-root}}" \
+              --precomputed-alignments-dir "{{inputs.parameters.precomputed-alignments-dir}}" \
+              --mmcif-dir "{{inputs.parameters.mmcif-dir}}" \
+              --openfold-checkpoint-path "{{inputs.parameters.openfold-checkpoint-path}}" \
+              --config-preset "{{inputs.parameters.config-preset}}" \
+              --model-device "{{inputs.parameters.model-device}}" \
+              --run-pretrained-script "{{inputs.parameters.run-pretrained-script}}" \
+              ${GPU_ID_PARAM}
+
         resources:
-          requests:
-            cpu: "2"
-            memory: "16Gi"
-            nvidia.com/gpu: 1
           limits:
-            cpu: "4"
-            memory: "32Gi"
             nvidia.com/gpu: 1
+            cpu: "8"
+            memory: "32Gi"
+          requests:
+            nvidia.com/gpu: 1
+            cpu: "4"
+            memory: "16Gi"
+
         volumeMounts:
-          - name: openfold-data-pvc
+          - name: openfold-data
             mountPath: /data
-        nodeSelector:
-          nvidia.com/gpu.present: "true"
+
+      volumes:
+        - name: openfold-data
+          persistentVolumeClaim:
+            claimName: openfold-data-pvc

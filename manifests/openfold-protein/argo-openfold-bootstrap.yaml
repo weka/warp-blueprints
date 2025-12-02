@@ -5,7 +5,21 @@ metadata:
 spec:
   entrypoint: bootstrap-databases
 
-  # Optional: cap overall parallel pods for this workflow
+  # User-editable parameters (appear in Argo UI)
+  arguments:
+    parameters:
+      - name: pdb70-root
+        value: "/data/databases/pdb70"
+      - name: pdb70-url
+        value: "https://wwwuser.gwdg.de/~compbiol/data/hhsuite/databases/hhsuite_dbs/pdb70_from_mmcif_latest.tar.gz"
+      # Which UniRef preset to use with `mmseqs databases`
+      - name: uniref-source
+        value: "UniRef50"
+      # Local directory name under /data/databases
+      - name: uniref-name
+        value: "uniref50"
+
+  # Optional: cap overall concurrent pods for this workflow
   parallelism: 4
 
   volumes:
@@ -15,17 +29,14 @@ spec:
 
   templates:
     # ============================
-    # Top-level: run PDB70 + UniRef50 in parallel
+    # Top-level: run PDB70 + UniRef in parallel
     # ============================
     - name: bootstrap-databases
       steps:
         - - name: download-pdb70
             template: download-pdb70
-          - name: build-uniref50
-            template: build-uniref50
-          # If you add UniRef90, you can stick it here too:
-          # - name: build-uniref90
-          #   template: build-uniref90
+          - name: build-uniref
+            template: build-uniref
 
     # ============================
     # PDB70 downloader (1 pod)
@@ -34,11 +45,6 @@ spec:
       container:
         image: wekachrisjen/warp-openfold-cpu:v0.5
         imagePullPolicy: IfNotPresent
-        env:
-          - name: PDB70_ROOT
-            value: "/data/databases/pdb70"
-          - name: PDB70_URL
-            value: "https://wwwuser.gwdg.de/~compbiol/data/hhsuite/databases/hhsuite_dbs/pdb70_from_mmcif_latest.tar.gz"
         command: ["bash", "-c"]
         args:
           - |
@@ -48,8 +54,8 @@ spec:
               echo "[$(date '+%Y-%m-%d %H:%M:%S')] [INIT-PDB70] $*" >&2
             }
 
-            PDB70_ROOT="${PDB70_ROOT:-/data/databases/pdb70}"
-            PDB70_URL="${PDB70_URL}"
+            PDB70_ROOT="{{workflow.parameters.pdb70-root}}"
+            PDB70_URL="{{workflow.parameters.pdb70-url}}"
             PDB70_TARBALL="pdb70_from_mmcif_latest.tar.gz"
 
             log "Ensuring PDB70 root directory exists at ${PDB70_ROOT}"
@@ -104,9 +110,10 @@ spec:
             mountPath: /data
 
     # ============================
-    # UniRef50 MMseqs DB builder (1 pod)
+    # UniRef MMseqs DB builder (1 pod)
+    # Uses user-selected UniRef DB and local name
     # ============================
-    - name: build-uniref50
+    - name: build-uniref
       container:
         image: wekachrisjen/warp-openfold-cpu:v0.5
         imagePullPolicy: IfNotPresent
@@ -119,52 +126,34 @@ spec:
             set -euo pipefail
 
             log() {
-              echo "[$(date '+%Y-%m-%d %H:%M:%S')] [INIT-UNIREFF50] $*" >&2
+              echo "[$(date '+%Y-%m-%d %H:%M:%S')] [INIT-UNIREF] $*" >&2
             }
 
-            log "Creating directories under /data..."
-            mkdir -p /data/databases/uniref50 /data/tmp
+            UNIREFF_SOURCE="{{workflow.parameters.uniref-source}}"
+            UNIREFF_NAME="{{workflow.parameters.uniref-name}}"
 
-            log "Building UniRef50 MMseqs database..."
-            mmseqs databases UniRef50 \
-              /data/databases/uniref50/uniref50_mmseqs \
+            DB_DIR="/data/databases/${UNIREFF_NAME}"
+            DB_PREFIX="${DB_DIR}/${UNIREFF_NAME}_mmseqs"
+
+            log "Using UniRef source preset: ${UNIREFF_SOURCE}"
+            log "Target directory: ${DB_DIR}"
+            log "Target MMseqs DB prefix: ${DB_PREFIX}"
+
+            mkdir -p "${DB_DIR}" /data/tmp
+
+            # If DB already exists, skip rebuild
+            if ls "${DB_PREFIX}".dbtype >/dev/null 2>&1; then
+              log "MMseqs DB '${DB_PREFIX}' already exists. Skipping build."
+              exit 0
+            fi
+
+            log "Building ${UNIREFF_SOURCE} MMseqs database..."
+            mmseqs databases "${UNIREFF_SOURCE}" \
+              "${DB_PREFIX}" \
               /data/tmp \
               --threads "${MMSEQS_THREADS:-32}"
 
-            log "UniRef50 MMseqs database build complete."
+            log "${UNIREFF_SOURCE} MMseqs database build complete at ${DB_PREFIX}"
         volumeMounts:
           - name: openfold-data
             mountPath: /data
-
-    # ============================
-    # (Optional) UniRef90 builder
-    # ============================
-    # - name: build-uniref90
-    #   container:
-    #     image: wekachrisjen/warp-openfold-cpu:v0.5
-    #     imagePullPolicy: IfNotPresent
-    #     env:
-    #       - name: MMSEQS_THREADS
-    #         value: "32"
-    #     command: ["bash", "-c"]
-    #     args:
-    #       - |
-    #         set -euo pipefail
-    #
-    #         log() {
-    #           echo "[$(date '+%Y-%m-%d %H:%M:%S')] [INIT-UNIREFF90] $*" >&2
-    #         }
-    #
-    #         log "Creating directories under /data..."
-    #         mkdir -p /data/databases/uniref90 /data/tmp
-    #
-    #         log "Building UniRef90 MMseqs database..."
-    #         mmseqs databases UniRef90 \
-    #           /data/databases/uniref90/uniref90_mmseqs \
-    #           /data/tmp \
-    #           --threads "${MMSEQS_THREADS:-32}"
-    #
-    #         log "UniRef90 MMseqs database build complete."
-    #     volumeMounts:
-    #       - name: openfold-data
-    #         mountPath: /data
