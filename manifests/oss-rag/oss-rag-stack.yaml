@@ -479,9 +479,9 @@ data:
         {% if storage_class %}storageClass:  "{{ storage_class }}"{% endif %}
         nodeSelectorTerms:
           - matchExpressions:
-              - key: "eks.amazonaws.com/nodegroup"
+              - key: "nvidia.com/gpu.present"
                 operator: "In"
-                values: [ "gpu-node-group-20251114002111175200000019" ]
+                values: [ "true" ]
     
         vllmConfig:
           enableChunkedPrefill: false
@@ -533,9 +533,9 @@ data:
         {% if storage_class %}storageClass:  "{{ storage_class }}"{% endif %}
         nodeSelectorTerms:
           - matchExpressions:
-              - key: "eks.amazonaws.com/nodegroup"
+              - key: "nvidia.com/gpu.present"
                 operator: "In"
-                values: [ "gpu-node-group-20251114002111175200000019" ]
+                values: [ "true" ]
     
     #    nodeSelectorTerms:
     #      - matchExpressions:

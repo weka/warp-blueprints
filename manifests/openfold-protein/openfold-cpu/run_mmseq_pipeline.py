@@ -30,6 +30,24 @@ def run_cmd(cmd, env=None, check=True) -> subprocess.CompletedProcess:
 
 
 # ---------------------------------------------------------------------------
+# FASTA helpers
+# ---------------------------------------------------------------------------
+
+def get_first_fasta_tag(fasta_path: Path) -> str:
+    """
+    Return the first FASTA header (without '>') as the tag used by OpenFold.
+    Falls back to 'query' if no header is found.
+    """
+    with fasta_path.open() as f:
+        for line in f:
+            line = line.strip()
+            if line.startswith(">"):
+                name = line[1:].strip()
+                return name if name else "query"
+    return "query"
+
+
+# ---------------------------------------------------------------------------
 # Trivial single-sequence A3M writer
 # ---------------------------------------------------------------------------
 
@@ -39,24 +57,18 @@ def write_trivial_a3m(fasta_path: Path, a3m_out: Path) -> None:
     single-sequence A3M file from the query FASTA so that downstream
     OpenFold / HHsearch still have something to consume.
     """
-    log(f"Writing trivial single-sequence A3M to '{a3m_out}'")
+    seq_id = get_first_fasta_tag(fasta_path)
+    log(f"Writing trivial single-sequence A3M to '{a3m_out}' (tag='{seq_id}')")
     a3m_out.parent.mkdir(parents=True, exist_ok=True)
 
-    seq_id = None
     seq_lines = []
     with fasta_path.open() as f:
         for line in f:
             line = line.strip()
-            if not line:
+            if not line or line.startswith(">"):
                 continue
-            if line.startswith(">"):
-                if seq_id is None:
-                    seq_id = line[1:] if line[1:] else "query"
-            else:
-                seq_lines.append(line)
+            seq_lines.append(line)
 
-    if seq_id is None:
-        seq_id = "query"
     seq = "".join(seq_lines) if seq_lines else ""
 
     with a3m_out.open("w") as out:
@@ -126,6 +138,7 @@ def run_mmseqs(
     protein_name = fasta_path.name
     log(f"Starting CPU-only MMseqs2 pipeline for {protein_name}")
     log(f"Using FASTA: {fasta_path}")
+    log(f"MMseqs output_dir: {output_dir}")
 
     # ------------------------------------------------------------------
     # Paths
@@ -195,8 +208,10 @@ def run_mmseqs(
     # ------------------------------------------------------------------
     log(f"Inspecting Result DB size with: {mmseqs_bin} dbsize {result_db}")
     try:
-        dbsize_out = subprocess.check_output([mmseqs_bin, "dbsize", str(result_db)],
-                                             stderr=subprocess.STDOUT)
+        dbsize_out = subprocess.check_output(
+            [mmseqs_bin, "dbsize", str(result_db)],
+            stderr=subprocess.STDOUT
+        )
         dbsize_text = dbsize_out.decode("utf-8", errors="ignore").strip()
         log(f"Result DB size info:\n{dbsize_text}")
     except subprocess.CalledProcessError as e:
@@ -281,7 +296,6 @@ def run_hhsearch(
 ) -> None:
     """
     Run HHsearch on the A3M against pdb70 HHM database.
-    (You said you already fixed the PDB70 pathing; we keep it simple here.)
     """
     hhr_out.parent.mkdir(parents=True, exist_ok=True)
     cmd = [
@@ -318,7 +332,8 @@ def parse_args(argv=None):
         "--precomputed-alignments-dir",
         type=Path,
         default=Path("/data/databases/embeddings_output_dir"),
-        help="Root directory to write A3M/HHR outputs (per-protein subdir).",
+        help="Root directory to write A3M/HHR outputs. "
+             "Final layout: <root>/<protein-id>/<tag>/",
     )
     parser.add_argument(
         "--uniref50-db",
@@ -398,12 +413,25 @@ def main(argv=None):
         log(f"ERROR: FASTA file not found: {fasta_path}")
         sys.exit(1)
 
-    # Where to put A3M/HHR for this protein
-    protein_align_dir = args.precomputed_alignments_dir / protein_id
-    protein_align_dir.mkdir(parents=True, exist_ok=True)
+    # Tag used by OpenFold (from FASTA header, e.g. '>protein1')
+    tag_for_openfold = get_first_fasta_tag(fasta_path)
+    log(f"Derived OpenFold tag from FASTA header: '{tag_for_openfold}'")
 
-    a3m_out = protein_align_dir / f"{protein_id}.a3m"
-    hhr_out = protein_align_dir / "pdb70.hhr"
+    # Final layout:
+    #   <precomputed-alignments-dir>/<protein-id>/<tag_for_openfold>/
+    #
+    # GPU step passes:
+    #   --use_precomputed_alignments <precomputed-alignments-dir>/<protein-id>
+    #
+    # OpenFold then appends '/<tag>' to that path.
+    protein_align_root = args.precomputed_alignments_dir / protein_id
+    local_alignment_dir = protein_align_root / tag_for_openfold
+    local_alignment_dir.mkdir(parents=True, exist_ok=True)
+    log(f"Writing alignments into: {local_alignment_dir}")
+
+    # Paths for outputs inside local_alignment_dir
+    a3m_out = local_alignment_dir / f"{protein_id}.a3m"
+    hhr_out = local_alignment_dir / "pdb70.hhr"
 
     # If A3M already exists, you *could* skip recompute. For now, always recompute.
     mmseqs_bin = args.mmseqs_bin
@@ -418,7 +446,7 @@ def main(argv=None):
         fasta_path=fasta_path,
         uniref_db=args.uniref50_db,
         tmp_dir=args.tmp_dir,
-        output_dir=protein_align_dir,
+        output_dir=local_alignment_dir,
         mmseqs_bin=mmseqs_bin,
         threads=args.mmseqs_threads,
         db_load_mode=args.mmseqs_db_load_mode,

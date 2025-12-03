@@ -158,7 +158,7 @@ spec:
           - name: min-hit-cov
           - name: result2msa-max-seq-id
       container:
-        image: wekachrisjen/warp-openfold-cpu:v0.16
+        image: wekachrisjen/warp-openfold-cpu:v0.17
         imagePullPolicy: IfNotPresent
         command: ["bash", "-c"]
         args:
@@ -216,21 +216,25 @@ spec:
           - name: gpu-id
           - name: run-pretrained-script
       container:
-        image: wekachrisjen/warp-openfold-gpu:v0.10
-        imagePullPolicy: IfNotPresent
+        image: wekachrisjen/warp-openfold-gpu:v0.14
+        imagePullPolicy: Always
+        workingDir: /app
         command: ["bash", "-c"]
         args:
           - |
             set -euo pipefail
 
             echo "[GPU] Running run_gpu_inference.py for {{inputs.parameters.protein-id}}"
+            echo "[GPU] Listing /app to confirm scripts are present:"
+            ls -l /app
 
             GPU_ID_PARAM=""
             if [[ -n "{{inputs.parameters.gpu-id}}" ]]; then
               GPU_ID_PARAM="--gpu-id {{inputs.parameters.gpu-id}}"
             fi
 
-            python3 /app/run_gpu_inference.py \
+            # Use 'python' from PATH (gpu-env python inside the image)
+            /opt/conda/envs/gpu-env/bin/python run_gpu_inference.py \
               --protein-id "{{inputs.parameters.protein-id}}" \
               --fasta-root "{{inputs.parameters.fasta-root}}" \
               --output-root "{{inputs.parameters.output-root}}" \

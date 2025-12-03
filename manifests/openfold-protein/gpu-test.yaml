@@ -1,0 +1,34 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: openfold-gpu-shell
+  labels:
+    app: openfold-gpu-shell
+spec:
+  restartPolicy: Never
+  securityContext:
+    fsGroup: 1000
+    fsGroupChangePolicy: OnRootMismatch
+  containers:
+    - name: gpu-shell
+      image: wekachrisjen/warp-openfold-gpu:v0.10
+      command: ["/bin/bash"]
+      args: ["-l"]   # or ["-c", "sleep infinity"] if you want a long-running shell
+      tty: true
+      stdin: true
+      volumeMounts:
+        - name: openfold-data-pvc
+          mountPath: /data
+      resources:
+        limits:
+          nvidia.com/gpu: 1
+          cpu: "8"
+          memory: "32Gi"
+        requests:
+          nvidia.com/gpu: 1
+          cpu: "4"
+          memory: "16Gi"
+  volumes:
+    - name: openfold-data-pvc
+      persistentVolumeClaim:
+        claimName: openfold-data-pvc
