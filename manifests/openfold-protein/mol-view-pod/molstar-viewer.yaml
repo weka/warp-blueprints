@@ -16,10 +16,10 @@ spec:
     spec:
       containers:
       - name: molstar-viewer
-        image: wekachrisjen/warp-openfold-molstar:v0.1
+        image: wekachrisjen/warp-openfold-molstar:v0.2
         imagePullPolicy: Always
         ports:
-        - containerPort: 8090
+        - containerPort: 8080
         volumeMounts:
           - name: openfold-data
             mountPath: /data
@@ -41,6 +41,6 @@ spec:
     app: molstar-viewer
   ports:
   - name: http
-    port: 8090
-    targetPort: 8090
+    port: 8080
+    targetPort: 8080
   type: ClusterIP

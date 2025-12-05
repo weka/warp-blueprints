@@ -7,11 +7,40 @@
     html, body { margin: 0; height: 100%; overflow: hidden; }
     #app { width: 100%; height: 100%; }
   </style>
+  <!-- Tailwind (for styling to match app theme) -->
+  <script src="https://cdn.tailwindcss.com"></script>
+
   <!-- Mol* from CDN -->
+  <link rel="stylesheet" href="https://unpkg.com/molstar@latest/build/viewer/molstar.css" />
   <script src="https://unpkg.com/molstar@latest/build/viewer/molstar.js"></script>
 </head>
 <body>
-  <div id="app"></div>
+  <div class="w-full h-full bg-neutral-900 text-neutral-100 flex">
+    <!-- Sidebar: directory browser -->
+    <div class="hidden md:flex md:flex-col md:w-80 border-r border-neutral-800 bg-neutral-950">
+      <div class="px-4 py-3 text-sm font-medium tracking-wide text-neutral-300 border-b border-neutral-800">
+        Browse mounted files (/data → /files)
+      </div>
+      <iframe id="browser" src="/files/" class="flex-1 w-full bg-neutral-950"></iframe>
+      <div class="px-4 py-2 text-xs text-neutral-400 border-t border-neutral-800">
+        Tip: Click a file (.pdb, .cif/.mmcif, .bcif, .gz) to load it. Click folders to navigate.
+      </div>
+    </div>
+
+    <!-- Main viewer area -->
+    <div class="flex-1 flex flex-col min-w-0">
+      <div class="px-4 py-3 text-sm border-b border-neutral-800 flex items-center justify-between">
+        <div>
+          <span class="text-neutral-300">Mol* Viewer</span>
+          <span id="current-file" class="ml-2 text-neutral-500"></span>
+        </div>
+        <div class="space-x-2">
+          <button id="reset-btn" class="px-2.5 py-1.5 rounded bg-neutral-800 text-neutral-200 hover:bg-neutral-700 text-xs">Reset</button>
+        </div>
+      </div>
+      <div class="flex-1 min-h-0" id="app"></div>
+    </div>
+  </div>
   <script>
     const viewer = new molstar.Viewer('app', {
       layoutIsExpanded: true,
@@ -22,11 +51,74 @@
       layoutShowLeftPanel: true,
     });
 
-    // Load the PDB that Argo mounted as structure.pdb
-    viewer.loadStructureFromUrl('structure.pdb', 'pdb', {
-      customId: 'OpenFold model'
-    }).then(() => {
-      viewer.applyPreset(molstar.PresetStructureHierarchy); // cartoon, etc.
+    // Helper to determine format from file extension
+    function inferFormat(path) {
+      const p = path.toLowerCase();
+      if (p.endsWith('.bcif') || p.endsWith('.bcif.gz')) return 'bcif';
+      if (p.endsWith('.cif') || p.endsWith('.cif.gz') || p.endsWith('.mmcif')) return 'cif';
+      return 'pdb';
+    }
+
+    function isStructureFile(path) {
+      const p = path.toLowerCase();
+      return p.endsWith('.pdb') || p.endsWith('.ent') || p.endsWith('.cif') || p.endsWith('.mmcif') || p.endsWith('.bcif') || p.endsWith('.gz');
+    }
+
+    const currentFileEl = document.getElementById('current-file');
+    const resetBtn = document.getElementById('reset-btn');
+
+    async function loadFile(urlPath) {
+      try {
+        currentFileEl.textContent = `— loading ${urlPath.replace(/^\/files\//, '')} ...`;
+        await viewer.loadStructureFromUrl(urlPath, inferFormat(urlPath), { customId: urlPath });
+        viewer.applyPreset(molstar.PresetStructureHierarchy);
+        currentFileEl.textContent = `— ${urlPath.replace(/^\/files\//, '')}`;
+      } catch (err) {
+        console.error('Failed to load structure:', err);
+        currentFileEl.textContent = '— failed to load';
+      }
+    }
+
+    // Hook into the autoindex page inside the iframe to intercept file clicks
+    const browser = document.getElementById('browser');
+    function attachBrowserHandlers() {
+      try {
+        const doc = browser.contentDocument || browser.contentWindow.document;
+        if (!doc) return;
+        const anchors = Array.from(doc.querySelectorAll('a[href]'));
+        anchors.forEach(a => {
+          a.addEventListener('click', (e) => {
+            const href = a.getAttribute('href');
+            if (!href) return;
+            // Allow directory navigation (usually ends with '/'), intercept files
+            if (href.endsWith('/')) {
+              return; // let iframe navigate
+            }
+            if (isStructureFile(href)) {
+              e.preventDefault();
+              const basePath = new URL(browser.contentWindow.location.href).pathname; // e.g. /files/subdir/
+              // Resolve possibly relative href against the current directory
+              const resolved = new URL(href, window.location.origin + basePath).pathname;
+              // Sanity: ensure it stays under /files/
+              const urlPath = resolved.startsWith('/files/') ? resolved : ('/files/' + resolved.replace(/^\/+/, ''));
+              loadFile(urlPath);
+            }
+          }, { capture: true });
+        });
+      } catch (err) {
+        console.warn('Could not attach browser handlers:', err);
+      }
+    }
+    browser.addEventListener('load', attachBrowserHandlers);
+
+    // Reset clears the current file and the viewer state
+    resetBtn.addEventListener('click', async () => {
+      try {
+        await viewer.clear();
+        currentFileEl.textContent = '';
+      } catch (e) {
+        console.warn('Reset error:', e);
+      }
     });
   </script>
 </body>
