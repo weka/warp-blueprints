@@ -11,7 +11,7 @@ spec:
     fsGroupChangePolicy: OnRootMismatch
   containers:
     - name: gpu-shell
-      image: wekachrisjen/warp-openfold-gpu:v0.10
+      image: wekachrisjen/warp-openfold-gpu:v0.17
       command: ["/bin/bash"]
       args: ["-l"]   # or ["-c", "sleep infinity"] if you want a long-running shell
       tty: true

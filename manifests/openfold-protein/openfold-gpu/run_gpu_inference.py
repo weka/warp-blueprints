@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import os
+import sys
 import subprocess
 import time
 from pathlib import Path
@@ -171,8 +172,13 @@ def main() -> None:
     #
     # Since we already validated that <fasta_root>/<protein_id> exists as a file
     # or inside a subdir, we can safely pass the *directory* here.
+
+    python_exe = sys.executable
+
+    print(f"[GPU] Using Python interpreter: {python_exe}", flush=True)
+
     cmd = [
-        "python3",
+        python_exe,
         args.run_pretrained_script,
         str(fasta_root),          # fasta_dir (directory, not single file)
         str(mmcif_dir),

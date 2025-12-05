@@ -1,0 +1,46 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: molstar-viewer
+  labels:
+    app: molstar-viewer
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: molstar-viewer
+  template:
+    metadata:
+      labels:
+        app: molstar-viewer
+    spec:
+      containers:
+      - name: molstar-viewer
+        image: wekachrisjen/warp-openfold-molstar:v0.1
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8090
+        volumeMounts:
+          - name: openfold-data
+            mountPath: /data
+
+      volumes:
+        - name: openfold-data
+          persistentVolumeClaim:
+            claimName: openfold-data-pvc
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: molstar-viewer
+  labels:
+    app: molstar-viewer
+spec:
+  selector:
+    app: molstar-viewer
+  ports:
+  - name: http
+    port: 8090
+    targetPort: 8090
+  type: ClusterIP

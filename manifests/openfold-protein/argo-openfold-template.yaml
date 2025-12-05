@@ -12,11 +12,17 @@ spec:
   # ---------------------------------------------------------------------------
   arguments:
     parameters:
-      # CPU / MMseqs2-related
+      # Legacy single-protein parameter (still here if you want to use it directly)
       - name: protein-id
         value: "protein1.fasta"
         description: "FASTA filename or protein ID under FASTA root (e.g. protein1.fasta)."
 
+      # NEW: list of protein IDs to process in parallel
+      - name: protein-ids
+        value: '["protein1.fasta"]'
+        description: "JSON array of FASTA filenames or protein IDs to process in parallel."
+
+      # CPU / MMseqs2-related
       - name: uniref50-db
         value: "/data/databases/uniref50/uniref50_mmseqs"
         description: "MMseqs2 UniRef50 DB prefix (no extension)."
@@ -87,18 +93,19 @@ spec:
         description: "Path to run_pretrained_openfold.py inside the container (--run-pretrained-script)."
 
   # ---------------------------------------------------------------------------
-  # DAG: CPU (MMseqs2+HHsearch) → GPU (OpenFold)
+  # DAG: CPU (MMseqs2+HHsearch) → GPU (OpenFold), per-protein in parallel
   # ---------------------------------------------------------------------------
   templates:
     - name: openfold-pipeline
       dag:
         tasks:
+          # Fan-out CPU step: one mmseq2-cpu per protein-id in protein-ids
           - name: mmseq2-cpu
             template: mmseq2-cpu
             arguments:
               parameters:
                 - name: protein-id
-                  value: "{{workflow.parameters.protein-id}}"
+                  value: "{{item}}"
                 - name: uniref50-db
                   value: "{{workflow.parameters.uniref50-db}}"
                 - name: pdb70-db
@@ -115,14 +122,16 @@ spec:
                   value: "{{workflow.parameters.min-hit-cov}}"
                 - name: result2msa-max-seq-id
                   value: "{{workflow.parameters.result2msa-max-seq-id}}"
+            withParam: "{{workflow.parameters.protein-ids}}"
 
+          # Fan-out GPU step: one gpu-openfold per protein-id, each depending on its mmseq2-cpu
           - name: gpu-openfold
             template: gpu-openfold
             dependencies: [mmseq2-cpu]
             arguments:
               parameters:
                 - name: protein-id
-                  value: "{{workflow.parameters.protein-id}}"
+                  value: "{{item}}"
                 - name: fasta-root
                   value: "{{workflow.parameters.fasta-root}}"
                 - name: output-root
@@ -141,6 +150,7 @@ spec:
                   value: "{{workflow.parameters.gpu-id}}"
                 - name: run-pretrained-script
                   value: "{{workflow.parameters.run-pretrained-script}}"
+            withParam: "{{workflow.parameters.protein-ids}}"
 
     # -----------------------------------------------------------------------
     # CPU template – aligned to run_mmseq_pipeline.py
@@ -216,35 +226,31 @@ spec:
           - name: gpu-id
           - name: run-pretrained-script
       container:
-        image: wekachrisjen/warp-openfold-gpu:v0.14
-        imagePullPolicy: Always
-        workingDir: /app
-        command: ["bash", "-c"]
+        image: wekachrisjen/warp-openfold-gpu:v0.20
+        imagePullPolicy: IfNotPresent
+        command: ["/opt/conda/envs/gpu-env/bin/python"]
         args:
-          - |
-            set -euo pipefail
-
-            echo "[GPU] Running run_gpu_inference.py for {{inputs.parameters.protein-id}}"
-            echo "[GPU] Listing /app to confirm scripts are present:"
-            ls -l /app
-
-            GPU_ID_PARAM=""
-            if [[ -n "{{inputs.parameters.gpu-id}}" ]]; then
-              GPU_ID_PARAM="--gpu-id {{inputs.parameters.gpu-id}}"
-            fi
-
-            # Use 'python' from PATH (gpu-env python inside the image)
-            /opt/conda/envs/gpu-env/bin/python run_gpu_inference.py \
-              --protein-id "{{inputs.parameters.protein-id}}" \
-              --fasta-root "{{inputs.parameters.fasta-root}}" \
-              --output-root "{{inputs.parameters.output-root}}" \
-              --precomputed-alignments-dir "{{inputs.parameters.precomputed-alignments-dir}}" \
-              --mmcif-dir "{{inputs.parameters.mmcif-dir}}" \
-              --openfold-checkpoint-path "{{inputs.parameters.openfold-checkpoint-path}}" \
-              --config-preset "{{inputs.parameters.config-preset}}" \
-              --model-device "{{inputs.parameters.model-device}}" \
-              --run-pretrained-script "{{inputs.parameters.run-pretrained-script}}" \
-              ${GPU_ID_PARAM}
+          - /app/run_gpu_inference.py
+          - --protein-id
+          - "{{inputs.parameters.protein-id}}"
+          - --fasta-root
+          - "{{inputs.parameters.fasta-root}}"
+          - --output-root
+          - "{{inputs.parameters.output-root}}"
+          - --precomputed-alignments-dir
+          - "{{inputs.parameters.precomputed-alignments-dir}}"
+          - --mmcif-dir
+          - "{{inputs.parameters.mmcif-dir}}"
+          - --openfold-checkpoint-path
+          - "{{inputs.parameters.openfold-checkpoint-path}}"
+          - --config-preset
+          - "{{inputs.parameters.config-preset}}"
+          - --model-device
+          - "{{inputs.parameters.model-device}}"
+          - --run-pretrained-script
+          - "{{inputs.parameters.run-pretrained-script}}"
+          # gpu-id is optional, you can let run_gpu_inference.py handle it
+          # via an optional arg if you want.
 
         resources:
           limits:
