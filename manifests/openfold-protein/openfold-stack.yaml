@@ -14,6 +14,7 @@ spec:
           name: "https://argoproj.github.io/argo-helm"
           version: "0.41.8"
           releaseName: "argo-workflows"
+          crdsStrategy: Auto
         valuesFiles:
           - kind: ConfigMap
             name: argo-config
