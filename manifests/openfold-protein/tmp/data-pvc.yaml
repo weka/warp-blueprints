@@ -7,17 +7,17 @@ spec:
     - ReadWriteMany
   resources:
     requests:
-      storage: 2000Gi
+      storage: 3000Gi
   storageClassName: storageclass-wekafs-dir-api
 ---
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: openfold-cache-pvc
-spec:
-  accessModes:
-    - ReadWriteMany
-  resources:
-    requests:
-      storage: 500Gi
-  storageClassName: storageclass-wekafs-dir-api
+#apiVersion: v1
+#kind: PersistentVolumeClaim
+#metadata:
+#  name: openfold-cache-pvc
+#spec:
+#  accessModes:
+#    - ReadWriteMany
+#  resources:
+#    requests:
+#      storage: 500Gi
+#  storageClassName: storageclass-wekafs-dir-api
