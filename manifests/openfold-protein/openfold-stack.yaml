@@ -87,6 +87,7 @@ spec:
           kind: PersistentVolumeClaim
           metadata:
             name: openfold-data-pvc
+            namespace: [[ namespace | default('openfold') ]]
           spec:
             accessModes:
               - ReadWriteMany
@@ -115,7 +116,7 @@ spec:
           kind: WorkflowTemplate
           metadata:
             name: openfold-pipeline
-            Namespace: [[ namespace | default('openfold') ]]
+            namespace: [[ namespace | default('openfold') ]]
           spec:
             entrypoint: openfold-pipeline
             serviceAccountName: argo-workflow-sa
@@ -404,7 +405,7 @@ spec:
           kind: WorkflowTemplate
           metadata:
             name: openfold-db-bootstrap
-            Namespace: [[ namespace | default('openfold') ]]
+            namespace: [[ namespace | default('openfold') ]]
           spec:
             entrypoint: bootstrap-databases
           
@@ -578,7 +579,7 @@ spec:
           kind: Role
           metadata:
             name: argo-workflow-role
-            Namespace: [[ namespace | default('openfold') ]]
+            namespace: [[ namespace | default('openfold') ]]
           rules:
             # Argo needs to create & manage pods that run each step
             - apiGroups: [""]
@@ -613,7 +614,7 @@ spec:
           kind: RoleBinding
           metadata:
             name: argo-workflow-rolebinding
-            Namespace: [[ namespace | default('openfold') ]]
+            namespace: [[ namespace | default('openfold') ]]
           subjects:
             - kind: ServiceAccount
               name: argo-workflow-sa          #matches your Helm values
@@ -635,7 +636,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: argo-config
-  Namespace: [[ namespace | default('openfold') ]]
+  namespace: [[ namespace | default('openfold') ]]
 data:
   argo_values.yaml: |
     ## Setup Argo Server, can change to sso or oidc if needed
