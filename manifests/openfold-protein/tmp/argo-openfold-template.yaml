@@ -168,7 +168,7 @@ spec:
           - name: min-hit-cov
           - name: result2msa-max-seq-id
       container:
-        image: wekachrisjen/warp-openfold-cpu:v0.17
+        image: wekachrisjen/warp-openfold-cpu:v0.18
         imagePullPolicy: IfNotPresent
         command: ["bash", "-c"]
         args:
@@ -226,7 +226,7 @@ spec:
           - name: gpu-id
           - name: run-pretrained-script
       container:
-        image: wekachrisjen/warp-openfold-gpu:v0.20
+        image: wekachrisjen/warp-openfold-gpu:v0.22
         imagePullPolicy: IfNotPresent
         command: ["/opt/conda/envs/gpu-env/bin/python"]
         args:

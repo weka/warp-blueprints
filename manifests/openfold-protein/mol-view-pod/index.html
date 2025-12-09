@@ -10,9 +10,9 @@
   <!-- Tailwind (for styling to match app theme) -->
   <script src="https://cdn.tailwindcss.com"></script>
 
-  <!-- Mol* from CDN -->
-  <link rel="stylesheet" href="https://unpkg.com/molstar@latest/build/viewer/molstar.css" />
-  <script src="https://unpkg.com/molstar@latest/build/viewer/molstar.js"></script>
+  <!-- Mol* from CDN (pin version to avoid breaking API changes) -->
+  <link rel="stylesheet" href="https://unpkg.com/molstar@3.37.0/build/viewer/molstar.css" />
+  <script src="https://unpkg.com/molstar@3.37.0/build/viewer/molstar.js"></script>
 </head>
 <body>
   <div class="w-full h-full bg-neutral-900 text-neutral-100 flex">
@@ -51,16 +51,32 @@
       layoutShowLeftPanel: true,
     });
 
+    // Normalize path by stripping any query/hash
+    function normalizePath(path) {
+      const i = path.indexOf('?');
+      const j = path.indexOf('#');
+      let end = path.length;
+      if (i !== -1) end = Math.min(end, i);
+      if (j !== -1) end = Math.min(end, j);
+      return path.slice(0, end);
+    }
+
     // Helper to determine format from file extension
     function inferFormat(path) {
-      const p = path.toLowerCase();
+      const p = normalizePath(path).toLowerCase();
       if (p.endsWith('.bcif') || p.endsWith('.bcif.gz')) return 'bcif';
-      if (p.endsWith('.cif') || p.endsWith('.cif.gz') || p.endsWith('.mmcif')) return 'cif';
+      if (p.endsWith('.cif') || p.endsWith('.cif.gz') || p.endsWith('.mmcif')) return 'mmcif';
       return 'pdb';
     }
 
+    // Helper to determine if the requested resource should be fetched as binary
+    function isBinaryForPath(path) {
+      const p = normalizePath(path).toLowerCase();
+      return p.endsWith('.bcif') || p.endsWith('.bcif.gz') || p.endsWith('.gz');
+    }
+
     function isStructureFile(path) {
-      const p = path.toLowerCase();
+      const p = normalizePath(path).toLowerCase();
       return p.endsWith('.pdb') || p.endsWith('.ent') || p.endsWith('.cif') || p.endsWith('.mmcif') || p.endsWith('.bcif') || p.endsWith('.gz');
     }
 
@@ -68,15 +84,42 @@
     const resetBtn = document.getElementById('reset-btn');
 
     async function loadFile(urlPath) {
+      const displayName = urlPath.replace(/^\/files\//, '');
+      const norm = normalizePath(urlPath);
+      const format = inferFormat(norm);
+      const isBinary = isBinaryForPath(norm);
+      currentFileEl.textContent = `— loading ${displayName} ...`;
+      console.debug('Mol* load attempt', {
+        molstarVersion: (window.molstar && molstar.VERSION) || 'unknown',
+        urlPath, norm, format, isBinary
+      });
+
+      // Try the tuple signature first, then fall back to the object signature used by some Mol* builds
       try {
-        currentFileEl.textContent = `— loading ${urlPath.replace(/^\/files\//, '')} ...`;
-        await viewer.loadStructureFromUrl(urlPath, inferFormat(urlPath), { customId: urlPath });
-        viewer.applyPreset(molstar.PresetStructureHierarchy);
-        currentFileEl.textContent = `— ${urlPath.replace(/^\/files\//, '')}`;
-      } catch (err) {
-        console.error('Failed to load structure:', err);
-        currentFileEl.textContent = '— failed to load';
+        // Signature: (url, format, isBinary, options)
+        await viewer.loadStructureFromUrl(norm, format, isBinary, { customId: norm, label: displayName });
+      } catch (e1) {
+        console.warn('First load method failed, retrying with object signature…', e1);
+        try {
+          // Fallback signature: ({ url, format, isBinary, label })
+          await viewer.loadStructureFromUrl({ url: norm, format, isBinary, label: displayName });
+        } catch (e2) {
+          console.error('Failed to load structure with both methods:', e2);
+          currentFileEl.textContent = '— failed to load';
+          return;
+        }
       }
+
+      // If we got here, the structure was queued/loaded successfully
+      try {
+        // Apply a sensible default view if available, but don't fail the load if preset API differs
+        if (molstar && molstar.PresetStructureHierarchy && typeof viewer.applyPreset === 'function') {
+          await viewer.applyPreset(molstar.PresetStructureHierarchy);
+        }
+      } catch (presetErr) {
+        console.debug('Preset application skipped/failed (non-fatal):', presetErr);
+      }
+      currentFileEl.textContent = `— ${displayName}`;
     }
 
     // Hook into the autoindex page inside the iframe to intercept file clicks
@@ -90,12 +133,17 @@
           a.addEventListener('click', (e) => {
             const href = a.getAttribute('href');
             if (!href) return;
+            // Ignore query/hash/absolute links produced by autoindex controls
+            if (href.startsWith('?') || href.startsWith('#') || href.startsWith('http://') || href.startsWith('https://')) {
+              return;
+            }
             // Allow directory navigation (usually ends with '/'), intercept files
             if (href.endsWith('/')) {
               return; // let iframe navigate
             }
             if (isStructureFile(href)) {
               e.preventDefault();
+              if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation();
               const basePath = new URL(browser.contentWindow.location.href).pathname; // e.g. /files/subdir/
               // Resolve possibly relative href against the current directory
               const resolved = new URL(href, window.location.origin + basePath).pathname;

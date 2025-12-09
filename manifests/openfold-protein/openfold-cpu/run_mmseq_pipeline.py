@@ -332,8 +332,11 @@ def parse_args(argv=None):
         "--precomputed-alignments-dir",
         type=Path,
         default=Path("/data/databases/embeddings_output_dir"),
-        help="Root directory to write A3M/HHR outputs. "
-             "Final layout: <root>/<protein-id>/<tag>/",
+        help=(
+            "Root directory to write A3M/HHR outputs. "
+            "Final layout: <root>/<target_id>/ where <target_id> is derived "
+            "from the first FASTA header (e.g. '>protein1')."
+        ),
     )
     parser.add_argument(
         "--uniref50-db",
@@ -417,23 +420,25 @@ def main(argv=None):
     tag_for_openfold = get_first_fasta_tag(fasta_path)
     log(f"Derived OpenFold tag from FASTA header: '{tag_for_openfold}'")
 
-    # Final layout:
-    #   <precomputed-alignments-dir>/<protein-id>/<tag_for_openfold>/
+    # Final layout for this protein:
+    #   <precomputed-alignments-dir>/<tag_for_openfold>/
     #
-    # GPU step passes:
-    #   --use_precomputed_alignments <precomputed-alignments-dir>/<protein-id>
+    # GPU step will pass:
+    #   --use_precomputed_alignments <precomputed-alignments-dir>
     #
-    # OpenFold then appends '/<tag>' to that path.
-    protein_align_root = args.precomputed_alignments_dir / protein_id
-    local_alignment_dir = protein_align_root / tag_for_openfold
-    local_alignment_dir.mkdir(parents=True, exist_ok=True)
-    log(f"Writing alignments into: {local_alignment_dir}")
+    # OpenFold then appends '/<tag_for_openfold>' internally to locate these files.
+    alignments_root = args.precomputed_alignments_dir
+    target_align_dir = alignments_root / tag_for_openfold
+    target_align_dir.mkdir(parents=True, exist_ok=True)
 
-    # Paths for outputs inside local_alignment_dir
-    a3m_out = local_alignment_dir / f"{protein_id}.a3m"
-    hhr_out = local_alignment_dir / "pdb70.hhr"
+    log(f"ALIGNMENTS_ROOT:    {alignments_root}")
+    log(f"TARGET_ALIGN_DIR:   {target_align_dir}")
 
-    # If A3M already exists, you *could* skip recompute. For now, always recompute.
+    # Paths for outputs inside target_align_dir
+    # (filename isn't critical; directory is what matters to OpenFold)
+    a3m_out = target_align_dir / f"{protein_id}.a3m"
+    hhr_out = target_align_dir / "pdb70.hhr"
+
     mmseqs_bin = args.mmseqs_bin
 
     # If mmseqs-latest is not found, fall back to "mmseqs" in PATH
@@ -441,12 +446,12 @@ def main(argv=None):
         log(f"WARNING: mmseqs_bin '{mmseqs_bin}' not found. Falling back to 'mmseqs' in PATH.")
         mmseqs_bin = "mmseqs"
 
-    # Run MMseqs2 alignment pipeline
+    # Run MMseqs2 alignment pipeline, writing into target_align_dir
     a3m_path = run_mmseqs(
         fasta_path=fasta_path,
         uniref_db=args.uniref50_db,
         tmp_dir=args.tmp_dir,
-        output_dir=local_alignment_dir,
+        output_dir=target_align_dir,
         mmseqs_bin=mmseqs_bin,
         threads=args.mmseqs_threads,
         db_load_mode=args.mmseqs_db_load_mode,

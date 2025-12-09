@@ -1,8 +1,8 @@
 apiVersion: warp.io/v1alpha1
 kind: WekaAppStore
 metadata:
-  name: {{ deployment_name | default('openfold-stack') }}
-  namespace: {{ namespace | default('openfold') }}
+  name: openfold-protein-stack
+  namespace: openfold
 spec:
   appStack:
     components:
@@ -23,7 +23,7 @@ spec:
           type: pod
           selector: "app.kubernetes.io/instance=argo-workflows"
           timeout: 300
-        targetnamespace: {{ namespace | default('openfold') }}
+        targetNamespace: openfold
 
       #2. Storage Class for Openfold data
       - name: openfold-storage-class
@@ -46,7 +46,7 @@ spec:
           parameters:
             # Directory-backed volumes on an existing WEKA filesystem
             volumeType: dir/v1
-            filesystemName: {{ weka_cluster_filesystem | default('default') }}
+            filesystemName: default    # <-- must match a filesystem the operator created
           
             # Enforce WEKA directory quota strictly (HARD or SOFT)
             capacityEnforcement: HARD
@@ -74,7 +74,7 @@ spec:
           type: pod
           selector: ""
           timeout: 300
-        targetnamespace: {{ namespace | default('openfold') }}
+        targetNamespace: openfold
 
       #3. Create the PVC for Openfold data
       - name: openfold-data-pvc
@@ -92,7 +92,7 @@ spec:
               - ReadWriteMany
             resources:
               requests:
-                storage: {{ openfold_storage_capacity | default('1000Gi') }}
+                storage: 2000Gi
             storageClassName: weka-openfold-dir-api
 
         waitForReady: false
@@ -100,7 +100,7 @@ spec:
           type: pod
           selector: ""
           timeout: 300
-        targetNamespace: {{ namespace | default('openfold') }}
+        targetNamespace: openfold
 
       # 6. Argo workflow template for Openfold pipeline
       - name: openfold-workflow-template
@@ -115,7 +115,7 @@ spec:
           kind: WorkflowTemplate
           metadata:
             name: openfold-pipeline
-            Namespace: {{ namespace | default('openfold') }}
+            namespace: openfold
           spec:
             entrypoint: openfold-pipeline
             serviceAccountName: argo-workflow-sa
@@ -389,7 +389,7 @@ spec:
           type: pod
           selector: ""
           timeout: 300
-        targetNamespace: {{ namespace | default('openfold') }}
+        targetNamespace: openfold
 
       # 7. Argo workflow template for bootstraping databases
       - name: openfold-workflow-bootstrap-template
@@ -404,7 +404,6 @@ spec:
           kind: WorkflowTemplate
           metadata:
             name: openfold-db-bootstrap
-            Namespace: {{ namespace | default('openfold') }}
           spec:
             entrypoint: bootstrap-databases
           
@@ -566,7 +565,7 @@ spec:
           type: pod
           selector: ""
           timeout: 300
-        targetNamespace: {{ namespace | default('openfold') }}
+        targetNamespace: openfold
 
       # 8. Kubernetes Role for Argo workflows
       - name: kubernetes-role
@@ -578,7 +577,7 @@ spec:
           kind: Role
           metadata:
             name: argo-workflow-role
-            Namespace: {{ namespace | default('openfold') }}
+            namespace: openfold
           rules:
             # Argo needs to create & manage pods that run each step
             - apiGroups: [""]
@@ -600,7 +599,7 @@ spec:
           type: pod
           selector: ""
           timeout: 300
-        targetNamespace: {{ namespace | default('openfold') }}
+        targetNamespace: openfold
 
       # 9. Kubernetes RoleBinding for Argo workflows
       - name: kubernetes-role-binding
@@ -613,11 +612,11 @@ spec:
           kind: RoleBinding
           metadata:
             name: argo-workflow-rolebinding
-            Namespace: {{ namespace | default('openfold') }}
+            namespace: openfold
           subjects:
             - kind: ServiceAccount
               name: argo-workflow-sa          #matches your Helm values
-              Namespace: {{ namespace | default('openfold') }}
+              namespace: openfold
           roleRef:
             kind: Role
             name: argo-workflow-role
@@ -628,14 +627,14 @@ spec:
           type: pod
           selector: ""
           timeout: 300
-        targetNamespace: {{ namespace | default('openfold') }}
+        targetNamespace: openfold
 ---
 # ConfigMap for Argo values
 apiVersion: v1
 kind: ConfigMap
 metadata:
   name: argo-config
-  Namespace: {{ namespace | default('openfold') }}
+  namespace: openfold
 data:
   argo_values.yaml: |
     ## Setup Argo Server, can change to sso or oidc if needed

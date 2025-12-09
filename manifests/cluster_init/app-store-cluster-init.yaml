@@ -58,6 +58,34 @@ spec:
           selector: "app=gpu-operator"
           timeout: 300
         targetNamespace: gpu-operator
+      
+      # Install NVIDIA DCGM ServiceMonitor via operator manifests
+      - name: nvidia-dcgm-servicemonitor
+        description: "ServiceMonitor for NVIDIA DCGM exporter"
+        enabled: true
+        dependsOn:
+          - kube-prom-stack        # ensure Prometheus Operator (CRDs) is ready
+          - nvidia-operator        # ensure DCGM exporter Service exists
+        kubernetesManifest: |
+          apiVersion: monitoring.coreos.com/v1
+          kind: ServiceMonitor
+          metadata:
+            name: dcgm-exporter
+            namespace: monitoring
+            labels:
+              release: kube-prom-stack
+          spec:
+            namespaceSelector:
+              matchNames:
+                - gpu-operator
+            selector:
+              matchLabels:
+                app: nvidia-dcgm-exporter
+            endpoints:
+              - port: gpu-metrics
+                path: /metrics
+                interval: 30s
+                honorLabels: true
 ---
 # ConfigMap for Prom-stack values
 apiVersion: v1
@@ -101,9 +129,6 @@ data:
       #     repeat_interval: 12h
       #     routes:
       #       - receiver: "slack-notifications"
-      #         # matchers:
-      #         #   - alertname="EmojivotoInstanceDown"
-      #         # continue: false
       #   receivers:
       #     - name: "slack-notifications"
       #       slack_configs:
@@ -112,78 +137,46 @@ data:
       #           title: "{{ range .Alerts }}{{ .Annotations.summary }}\n{{ end }}"
       #           text: "{{ range .Alerts }}{{ .Annotations.description }}\n{{ end }}"
 
-    # additionalPrometheusRulesMap:
-    #   rule-name:
-    #     groups:
-    #     - name: emojivoto-instance-down
-    #       rules:
-    #         - alert: EmojivotoInstanceDown
-    #           expr: sum(kube_pod_owner{namespace="emojivoto"}) by (namespace) < 4
-    #           for: 1m
-    #           labels:
-    #             severity: 'critical'
-    #             alert_type: 'infrastructure'
-    #           annotations:
-    #             description: ' The Number of pods from the namespace {{ $labels.namespace }} is lower than the expected 4. '
-    #             summary: 'Pod in {{ $labels.namespace }} namespace down'
-
     ## Using default values from https://github.com/grafana/helm-charts/blob/main/charts/grafana/values.yaml
     ##
     grafana:
       enabled: true
       adminPassword: prom-operator # Please change the default password in production !!!
-      #   affinity:
-      #     nodeAffinity:
-      #       preferredDuringSchedulingIgnoredDuringExecution:
-      #       - weight: 1
-      #         preference:
-      #           matchExpressions:
-      #           - key: preferred
-      #             operator: In
-      #             values:
-      #             - observability
-
-      # # Starter Kit setup for DigitalOcean Block Storage
-      # persistence:
-      #   enabled: true
-      #   storageClassName: do-block-storage
-      #   accessModes: ["ReadWriteOnce"]
-      #   size: 5Gi
+      # persistence / affinity omitted for brevity
 
     ## Manages Prometheus and Alertmanager components
     ##
     prometheusOperator:
       enabled: true
 
+    ## Cluster-wide node & kubelet metrics
+    ##
+    nodeExporter:
+      enabled: true
+
+    kubelet:
+      enabled: true
+      serviceMonitor:
+        enabled: true
+        # Enable cAdvisor metrics if your chart supports this flag
+        # cAdvisor: true
+
     ## Deploy a Prometheus instance
     ##
     prometheus:
       enabled: true
 
-      # Monitor vLLM pods using ServiceMonitor
-      additionalServiceMonitors:
-        - name: "vllm-monitor"
-          selector:
-            matchExpressions:
-              - key: app.kubernetes.io/managed-by
-                operator: In
-                values:
-                  - Helm
-              - key: environment
-                operator: In
-                values:
-                  - test
-                  - router
-              - key: release
-                operator: In
-                values:
-                  - test
-                  - router
-          namespaceSelector:
-            any: true
-          endpoints:
-            - port: "service-port"
-            - port: "router-sport"
+      ## IMPORTANT: enable cluster-wide monitoring
+      prometheusSpec:
+        # Allow Prometheus to discover ServiceMonitors/PodMonitors in ALL namespaces
+        serviceMonitorNamespaceSelector: {}
+        podMonitorNamespaceSelector: {}
+
+        # Do not restrict by labels – pick up all ServiceMonitors/PodMonitors
+        serviceMonitorSelector: {}
+        serviceMonitorSelectorNilUsesHelmValues: false
+        podMonitorSelector: {}
+        podMonitorSelectorNilUsesHelmValues: false
 ---
 # ConfigMap for Prometheus Adaptor values
 apiVersion: v1
@@ -225,35 +218,14 @@ data:
           as: "vllm_num_incoming_requests_total"
         metricsQuery: sum by(namespace, model) (vllm:num_incoming_requests_total)
 ---
-apiVersion: storage.k8s.io/v1
-kind: StorageClass
-metadata:
-  name: default
-  annotations:
-    storageclass.kubernetes.io/is-default-class: "true"
-provisioner: kubernetes.io/aws-ebs
-reclaimPolicy: Delete
-volumeBindingMode: WaitForFirstConsumer #This was changed to address the multi AZ nature of EKS
-parameters:
-  type: gp3
----
-# Need to have Prometheus Operator installed FIRST
-#apiVersion: monitoring.coreos.com/v1
-#kind: ServiceMonitor
+#apiVersion: storage.k8s.io/v1
+#kind: StorageClass
 #metadata:
-#  name: dcgm-exporter
-#  namespace: monitoring                  # can be elsewhere, but must be in Prometheus' namespaceSelector
-#  labels:
-#    release: kube-prom-stack            # <- change to your Prometheus' selector label
-#spec:
-#  namespaceSelector:
-#    matchNames:
-#      - gpu-operator
-#  selector:
-#    matchLabels:
-#      app: nvidia-dcgm-exporter   # <- adjust to match labels on nvidia-dcgm-exporter Service
-#  endpoints:
-#    - port: gpu-metrics                      # or use targetPort: 9400 if your Service lacks a port name
-#      path: /metrics
-#      interval: 30s
-#      honorLabels: true
+#  name: default
+#  annotations:
+#    storageclass.kubernetes.io/is-default-class: "true"
+#provisioner: kubernetes.io/aws-ebs
+#reclaimPolicy: Delete
+#volumeBindingMode: WaitForFirstConsumer #This was changed to address the multi AZ nature of EKS
+#parameters:
+#  type: gp3

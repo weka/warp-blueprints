@@ -16,7 +16,7 @@ spec:
     spec:
       containers:
       - name: molstar-viewer
-        image: wekachrisjen/warp-openfold-molstar:v0.2
+        image: wekachrisjen/warp-openfold-molstar:v0.3
         imagePullPolicy: Always
         ports:
         - containerPort: 8080

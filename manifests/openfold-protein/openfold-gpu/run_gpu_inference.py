@@ -36,6 +36,21 @@ def find_fasta_for_protein(fasta_root: Path, protein: str) -> Path:
     )
 
 
+def get_first_fasta_tag(fasta_path: Path) -> str:
+    """
+    Return the first FASTA header (without '>') as the tag used by OpenFold.
+    This must match what the CPU step uses to name the alignment directory.
+    Falls back to 'query' if no header is found.
+    """
+    with fasta_path.open() as f:
+        for line in f:
+            line = line.strip()
+            if line.startswith(">"):
+                name = line[1:].strip()
+                return name if name else "query"
+    return "query"
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="GPU-only OpenFold inference using precomputed alignments."
@@ -44,20 +59,27 @@ def main() -> None:
     parser.add_argument(
         "--protein-id",
         required=True,
-        help="Protein identifier (e.g. protein1, protein1.fasta); used to locate "
-             "FASTA, precomputed alignments, and the output directory.",
+        help=(
+            "Protein identifier (e.g. protein1, protein1.fasta); used to locate "
+            "FASTA and choose the output directory. The actual alignment directory "
+            "is derived from the FASTA header (e.g. '>protein1')."
+        ),
     )
     parser.add_argument(
         "--fasta-root",
         default=os.environ.get("FASTA_ROOT", "/data/input_fasta_single"),
-        help="Root directory containing protein FASTA files or subdirectories "
-             "(default: env FASTA_ROOT or /data/input_fasta_single).",
+        help=(
+            "Root directory containing protein FASTA files or subdirectories "
+            "(default: env FASTA_ROOT or /data/input_fasta_single)."
+        ),
     )
     parser.add_argument(
         "--output-root",
         default=os.environ.get("OUTPUT_ROOT", "/data/predictions"),
-        help="Root directory for model prediction outputs "
-             "(default: env OUTPUT_ROOT or /data/predictions).",
+        help=(
+            "Root directory for model prediction outputs "
+            "(default: env OUTPUT_ROOT or /data/predictions)."
+        ),
     )
     parser.add_argument(
         "--precomputed-alignments-dir",
@@ -65,8 +87,15 @@ def main() -> None:
             "PRECOMPUTED_ALIGNMENT_DIR",
             "/data/databases/embeddings_output_dir",
         ),
-        help="Root directory where the CPU step wrote precomputed alignments. "
-             "Each protein has a subdirectory: <precomputed-alignments-dir>/<protein-id>.",
+        help=(
+            "ROOT directory where the CPU step wrote precomputed alignments. "
+            "The CPU step creates per-target subdirectories:\n"
+            "  <precomputed-alignments-dir>/<target_id>/\n"
+            "where <target_id> is derived from the first FASTA header "
+            "(e.g. '>protein1' -> 'protein1'). This script passes the ROOT "
+            "to OpenFold via --use_precomputed_alignments and OpenFold appends "
+            "<target_id> internally."
+        ),
     )
     parser.add_argument(
         "--mmcif-dir",
@@ -100,8 +129,10 @@ def main() -> None:
     parser.add_argument(
         "--gpu-id",
         default=os.environ.get("GPU_ID"),
-        help="Optional GPU ID to set CUDA_VISIBLE_DEVICES (e.g. 0, 1, ...). "
-             "If not set, uses whatever is visible in the container.",
+        help=(
+            "Optional GPU ID to set CUDA_VISIBLE_DEVICES (e.g. 0, 1, ...). "
+            "If not set, uses whatever is visible in the container."
+        ),
     )
     parser.add_argument(
         "--run-pretrained-script",
@@ -115,19 +146,18 @@ def main() -> None:
     protein_id = args.protein_id
     fasta_root = Path(args.fasta_root)
     output_root = Path(args.output_root)
-    precomputed_root = Path(args.precomputed_alignments_dir)
+    alignments_root = Path(args.precomputed_alignments_dir)
     mmcif_dir = Path(args.mmcif_dir)
     checkpoint_path = Path(args.openfold_checkpoint_path)
 
-    # Where this protein's outputs go
+    # Where this protein's outputs go (per-protein output dir is still fine)
     outdir = output_root / protein_id
     outdir.mkdir(parents=True, exist_ok=True)
 
-    # Where CPU step wrote alignments for this protein
-    align_dir = precomputed_root / protein_id
-    if not align_dir.exists():
+    # Ensure the alignments ROOT exists
+    if not alignments_root.is_dir():
         raise FileNotFoundError(
-            f"Precomputed alignment directory not found for '{protein_id}': {align_dir}"
+            f"Precomputed alignments ROOT directory not found: {alignments_root}"
         )
 
     # Ensure we can find at least one FASTA for this protein (for sanity + logging)
@@ -136,6 +166,37 @@ def main() -> None:
     except FileNotFoundError as e:
         log(str(e))
         raise
+
+    # Derive the OpenFold target ID from the FASTA header
+    target_id = get_first_fasta_tag(fasta_path)
+    target_align_dir = alignments_root / target_id
+
+    if not target_align_dir.is_dir():
+        # Fail early with a clear message instead of a cryptic FileNotFoundError
+        raise FileNotFoundError(
+            f"Expected alignment directory for target '{target_id}' not found.\n"
+            f"  FASTA:              {fasta_path}\n"
+            f"  ALIGNMENTS_ROOT:    {alignments_root}\n"
+            f"  EXPECTED SUBDIR:    {target_align_dir}\n"
+            "Ensure the CPU step wrote alignments under "
+            "<precomputed-alignments-dir>/<target_id>/ and that the "
+            "FASTA header used here matches the CPU's."
+        )
+
+    # Create a per-protein FASTA directory so OpenFold only sees this one sequence
+    # e.g. /data/tmp/fasta_dirs/protein1/
+    per_protein_fasta_dir = Path("/data/tmp/fasta_dirs") / target_id
+    per_protein_fasta_dir.mkdir(parents=True, exist_ok=True)
+    per_protein_fasta_path = per_protein_fasta_dir / fasta_path.name
+
+    # Symlink is cheap; copy if your FS doesn't like symlinks
+    if not per_protein_fasta_path.exists():
+        try:
+            per_protein_fasta_path.symlink_to(fasta_path)
+        except OSError:
+            # Fallback to a copy if symlinks aren't supported
+            log(f"Symlink failed for {per_protein_fasta_path}, copying instead.")
+            per_protein_fasta_path.write_bytes(fasta_path.read_bytes())
 
     # Check that checkpoint exists early, instead of failing deep in torch.load
     if not checkpoint_path.is_file():
@@ -149,44 +210,41 @@ def main() -> None:
         )
 
     if args.gpu_id is not None:
-        # Mirror your original CUDA_VISIBLE_DEVICES behavior, if desired
+        # Mirror original CUDA_VISIBLE_DEVICES behavior, if desired
         os.environ["CUDA_VISIBLE_DEVICES"] = str(args.gpu_id)
         log(f"Using CUDA_VISIBLE_DEVICES={os.environ['CUDA_VISIBLE_DEVICES']}")
 
     log(f"Starting GPU inference for protein '{protein_id}'")
-    log(f"  FASTA:          {fasta_path}")
-    log(f"  FASTA_DIR:      {fasta_root}")
-    log(f"  MMCIF_DIR:      {mmcif_dir}")
-    log(f"  OUTPUT_DIR:     {outdir}")
-    log(f"  ALIGNMENTS_DIR: {align_dir}")
-    log(f"  CHECKPOINT:     {checkpoint_path}")
-    log(f"  CONFIG_PRESET:  {args.config_preset}")
-    log(f"  MODEL_DEVICE:   {args.model_device}")
+    log(f"  FASTA:             {fasta_path}")
+    log(f"  PER_PROTEIN_DIR:   {per_protein_fasta_dir}")
+    log(f"  PER_PROTEIN_FASTA: {per_protein_fasta_path}")
+    log(f"  FASTA_ROOT (all):  {fasta_root}")
+    log(f"  TARGET_ID:         {target_id}")
+    log(f"  MMCIF_DIR:         {mmcif_dir}")
+    log(f"  OUTPUT_DIR:        {outdir}")
+    log(f"  ALIGNMENTS_ROOT:   {alignments_root}")
+    log(f"  TARGET_ALIGN_DIR:  {target_align_dir}")
+    log(f"  CHECKPOINT:        {checkpoint_path}")
+    log(f"  CONFIG_PRESET:     {args.config_preset}")
+    log(f"  MODEL_DEVICE:      {args.model_device}")
 
     start_time = time.time()
 
     # IMPORTANT:
-    # run_pretrained_openfold.py expects:
-    #   1) fasta_dir (directory with .fasta files)
-    #   2) template_mmcif_dir
-    #
-    # Since we already validated that <fasta_root>/<protein_id> exists as a file
-    # or inside a subdir, we can safely pass the *directory* here.
-
+    # Now we point OpenFold at per_protein_fasta_dir, which contains ONLY this protein.
     python_exe = sys.executable
-
     print(f"[GPU] Using Python interpreter: {python_exe}", flush=True)
 
     cmd = [
         python_exe,
         args.run_pretrained_script,
-        str(fasta_root),          # fasta_dir (directory, not single file)
+        str(per_protein_fasta_dir),   # fasta_dir (per-protein directory)
         str(mmcif_dir),
         "--output_dir", str(outdir),
         "--model_device", args.model_device,
         "--config_preset", args.config_preset,
         "--openfold_checkpoint_path", str(checkpoint_path),
-        "--use_precomputed_alignments", str(align_dir),
+        "--use_precomputed_alignments", str(alignments_root),
         # We deliberately do NOT pass jackhmmer/hhblits/mgnify/bfd/uniref90/etc
         # so OpenFold uses the precomputed alignments from the CPU MMseqs2 step.
     ]
