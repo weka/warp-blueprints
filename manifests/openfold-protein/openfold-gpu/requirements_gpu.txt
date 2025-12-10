@@ -12,3 +12,6 @@ pytorch-lightning
 
 # Optional:
 #deepspeed        # only if you use --use_deepspeed_evoformer_attention
+
+# Monitoring with Prometheus
+prometheus_client>=0.20.0

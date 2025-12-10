@@ -3,9 +3,55 @@ import argparse
 import os
 import sys
 import subprocess
+import time
 from pathlib import Path
 from datetime import datetime
 from typing import Optional
+
+from prometheus_client import (
+    start_http_server,
+    Histogram,
+    Counter,
+)
+
+# ---------------------------------------------------------------------------
+# Prometheus metrics
+# ---------------------------------------------------------------------------
+
+# Histogram buckets (seconds) tuned for MSA + HHsearch workloads
+MSA_BUCKETS = (1, 2, 5, 10, 20, 40, 80, 160, 320, 600, 1200)
+
+# End-to-end latency of MMseqs2 + HHsearch for one protein
+msa_total_latency = Histogram(
+    "openfold_msa_total_latency_seconds",
+    "Total latency of MMseqs2 + HHsearch pipeline per request",
+    buckets=MSA_BUCKETS,
+)
+
+# MMseqs2-only latency (createdb + search + result2msa + unpackdb)
+mmseqs_latency = Histogram(
+    "openfold_mmseqs_latency_seconds",
+    "Latency of MMseqs2 alignment pipeline per request",
+    buckets=MSA_BUCKETS,
+)
+
+# HHsearch-only latency
+hhsearch_latency = Histogram(
+    "openfold_hhsearch_latency_seconds",
+    "Latency of HHsearch per request",
+    buckets=MSA_BUCKETS,
+)
+
+# Requests / failures at the MSA+HHsearch stage
+msa_requests_total = Counter(
+    "openfold_msa_requests_total",
+    "Total number of MSA+HHsearch requests processed",
+)
+
+msa_failures_total = Counter(
+    "openfold_msa_failures_total",
+    "Total number of failed MSA+HHsearch requests",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -403,17 +449,34 @@ def parse_args(argv=None):
         help="pdb70 HHM database prefix (no extension).",
     )
 
+    # Metrics
+    parser.add_argument(
+        "--metrics-port",
+        type=int,
+        default=int(os.environ.get("OPENFOLD_MSA_METRICS_PORT", "9101")),
+        help="Port to expose Prometheus metrics on (0 to disable). "
+             "Default: 9101 or $OPENFOLD_MSA_METRICS_PORT.",
+    )
+
     return parser.parse_args(argv)
 
 
 def main(argv=None):
     args = parse_args(argv)
 
+    # Start Prometheus metrics server (if enabled)
+    if args.metrics_port and args.metrics_port > 0:
+        start_http_server(args.metrics_port)
+        log(f"Prometheus metrics server listening on :{args.metrics_port}")
+
     protein_id = args.protein_id
     fasta_path = args.fasta_root / protein_id
 
     if not fasta_path.is_file():
         log(f"ERROR: FASTA file not found: {fasta_path}")
+        # Count this as a failed "request"
+        msa_requests_total.inc()
+        msa_failures_total.inc()
         sys.exit(1)
 
     # Tag used by OpenFold (from FASTA header, e.g. '>protein1')
@@ -446,27 +509,52 @@ def main(argv=None):
         log(f"WARNING: mmseqs_bin '{mmseqs_bin}' not found. Falling back to 'mmseqs' in PATH.")
         mmseqs_bin = "mmseqs"
 
-    # Run MMseqs2 alignment pipeline, writing into target_align_dir
-    a3m_path = run_mmseqs(
-        fasta_path=fasta_path,
-        uniref_db=args.uniref50_db,
-        tmp_dir=args.tmp_dir,
-        output_dir=target_align_dir,
-        mmseqs_bin=mmseqs_bin,
-        threads=args.mmseqs_threads,
-        db_load_mode=args.mmseqs_db_load_mode,
-        search_evalue=args.search_evalue,
-        min_hit_cov=args.min_hit_cov,
-        result2msa_max_seq_id=args.result2msa_max_seq_id,
-    )
+    # MSA+HHsearch is one logical "request"
+    msa_requests_total.inc()
+    pipeline_start = time.time()
 
-    # Run HHsearch using the generated A3M
-    run_hhsearch(
-        hhsearch_bin=args.hhsearch_bin,
-        a3m_path=a3m_path,
-        pdb70_db=args.pdb70_db,
-        hhr_out=hhr_out,
-    )
+    try:
+        # Run MMseqs2 alignment pipeline, writing into target_align_dir
+        mmseqs_start = time.time()
+        a3m_path = run_mmseqs(
+            fasta_path=fasta_path,
+            uniref_db=args.uniref50_db,
+            tmp_dir=args.tmp_dir,
+            output_dir=target_align_dir,
+            mmseqs_bin=mmseqs_bin,
+            threads=args.mmseqs_threads,
+            db_load_mode=args.mmseqs_db_load_mode,
+            search_evalue=args.search_evalue,
+            min_hit_cov=args.min_hit_cov,
+            result2msa_max_seq_id=args.result2msa_max_seq_id,
+        )
+        mmseqs_duration = time.time() - mmseqs_start
+        mmseqs_latency.observe(mmseqs_duration)
+        log(f"MMseqs2 pipeline latency: {mmseqs_duration:.3f} s")
+
+        # Run HHsearch using the generated A3M
+        hhsearch_start = time.time()
+        run_hhsearch(
+            hhsearch_bin=args.hhsearch_bin,
+            a3m_path=a3m_path,
+            pdb70_db=args.pdb70_db,
+            hhr_out=hhr_out,
+        )
+        hhsearch_duration = time.time() - hhsearch_start
+        hhsearch_latency.observe(hhsearch_duration)
+        log(f"HHsearch latency: {hhsearch_duration:.3f} s")
+
+        total_duration = time.time() - pipeline_start
+        msa_total_latency.observe(total_duration)
+        log(f"Total MMseqs2 + HHsearch latency: {total_duration:.3f} s")
+
+    except Exception:
+        # Count failure and record how long we ran before failing
+        msa_failures_total.inc()
+        failed_duration = time.time() - pipeline_start
+        msa_total_latency.observe(failed_duration)
+        log(f"Pipeline failed after {failed_duration:.3f} s")
+        raise
 
     log(f"Generated alignments for {protein_id}")
     log(f"A3M: {a3m_path}")

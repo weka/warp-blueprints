@@ -1,0 +1,39 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: openfold-msa
+  namespace: monitoring
+  labels:
+    release: kube-prometheus-stack      # adjust if your Prom release label differs
+spec:
+  namespaceSelector:
+    matchNames:
+      - openfold                        # namespace where Argo runs OpenFold
+  selector:
+    matchLabels:
+      app: openfold-msa                 # from mmseq2-cpu template metadata.labels
+  podMetricsEndpoints:
+    - port: msa-metrics                 # from container.ports.name
+      path: /metrics
+      interval: 30s
+      honorLabels: true
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: openfold-inference
+  namespace: monitoring
+  labels:
+    release: kube-prometheus-stack      # adjust to match your Prometheus release
+spec:
+  namespaceSelector:
+    matchNames:
+      - openfold
+  selector:
+    matchLabels:
+      app: openfold-inference           # from gpu-openfold template metadata.labels
+  podMetricsEndpoints:
+    - port: of-metrics                  # from container.ports.name
+      path: /metrics
+      interval: 30s
+      honorLabels: true

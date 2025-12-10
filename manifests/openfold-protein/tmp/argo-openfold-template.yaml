@@ -156,6 +156,10 @@ spec:
     # CPU template – aligned to run_mmseq_pipeline.py
     # -----------------------------------------------------------------------
     - name: mmseq2-cpu
+      metadata:
+        labels:
+          app: openfold-msa          # for PodMonitor
+          openfold-stage: msa        # explicit stage label
       inputs:
         parameters:
           - name: protein-id
@@ -168,7 +172,7 @@ spec:
           - name: min-hit-cov
           - name: result2msa-max-seq-id
       container:
-        image: wekachrisjen/warp-openfold-cpu:v0.18
+        image: wekachrisjen/warp-openfold-cpu:v0.20
         imagePullPolicy: IfNotPresent
         command: ["bash", "-c"]
         args:
@@ -190,7 +194,12 @@ spec:
               --min-hit-cov {{inputs.parameters.min-hit-cov}} \
               --result2msa-max-seq-id {{inputs.parameters.result2msa-max-seq-id}} \
               --hhsearch-bin hhsearch \
-              --pdb70-db "{{inputs.parameters.pdb70-db}}"
+              --pdb70-db "{{inputs.parameters.pdb70-db}}" \
+              --metrics-port 9101
+
+        ports:
+          - name: msa-metrics
+            containerPort: 9101
 
         resources:
           requests:
@@ -213,6 +222,10 @@ spec:
     # GPU template – aligned to run_gpu_inference.py
     # -----------------------------------------------------------------------
     - name: gpu-openfold
+      metadata:
+        labels:
+          app: openfold-inference     # for PodMonitor
+          openfold-stage: inference   # explicit stage label
       inputs:
         parameters:
           - name: protein-id
@@ -226,7 +239,7 @@ spec:
           - name: gpu-id
           - name: run-pretrained-script
       container:
-        image: wekachrisjen/warp-openfold-gpu:v0.22
+        image: wekachrisjen/warp-openfold-gpu:v0.24
         imagePullPolicy: IfNotPresent
         command: ["/opt/conda/envs/gpu-env/bin/python"]
         args:
@@ -249,8 +262,12 @@ spec:
           - "{{inputs.parameters.model-device}}"
           - --run-pretrained-script
           - "{{inputs.parameters.run-pretrained-script}}"
-          # gpu-id is optional, you can let run_gpu_inference.py handle it
-          # via an optional arg if you want.
+          - --metrics-port
+          - "9102"
+
+        ports:
+          - name: of-metrics
+            containerPort: 9102
 
         resources:
           limits:

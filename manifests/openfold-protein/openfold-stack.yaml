@@ -117,7 +117,7 @@ spec:
           kind: WorkflowTemplate
           metadata:
             name: openfold-pipeline
-            namespace: [[ namespace | default('openfold') ]]
+            namespace: openfold
           spec:
             entrypoint: openfold-pipeline
             serviceAccountName: argo-workflow-sa
@@ -271,6 +271,10 @@ spec:
               # CPU template – aligned to run_mmseq_pipeline.py
               # -----------------------------------------------------------------------
               - name: mmseq2-cpu
+                metadata:
+                  labels:
+                    app: openfold-msa          # for PodMonitor
+                    openfold-stage: msa        # explicit stage label
                 inputs:
                   parameters:
                     - name: protein-id
@@ -283,7 +287,7 @@ spec:
                     - name: min-hit-cov
                     - name: result2msa-max-seq-id
                 container:
-                  image: wekachrisjen/warp-openfold-cpu:v0.18
+                  image: wekachrisjen/warp-openfold-cpu:v0.20
                   imagePullPolicy: IfNotPresent
                   command: ["bash", "-c"]
                   args:
@@ -305,7 +309,12 @@ spec:
                         --min-hit-cov {{inputs.parameters.min-hit-cov}} \
                         --result2msa-max-seq-id {{inputs.parameters.result2msa-max-seq-id}} \
                         --hhsearch-bin hhsearch \
-                        --pdb70-db "{{inputs.parameters.pdb70-db}}"
+                        --pdb70-db "{{inputs.parameters.pdb70-db}}" \
+                        --metrics-port 9101
+          
+                  ports:
+                    - name: msa-metrics
+                      containerPort: 9101
           
                   resources:
                     requests:
@@ -328,6 +337,10 @@ spec:
               # GPU template – aligned to run_gpu_inference.py
               # -----------------------------------------------------------------------
               - name: gpu-openfold
+                metadata:
+                  labels:
+                    app: openfold-inference     # for PodMonitor
+                    openfold-stage: inference   # explicit stage label
                 inputs:
                   parameters:
                     - name: protein-id
@@ -341,7 +354,7 @@ spec:
                     - name: gpu-id
                     - name: run-pretrained-script
                 container:
-                  image: wekachrisjen/warp-openfold-gpu:v0.22
+                  image: wekachrisjen/warp-openfold-gpu:v0.24
                   imagePullPolicy: IfNotPresent
                   command: ["/opt/conda/envs/gpu-env/bin/python"]
                   args:
@@ -364,8 +377,12 @@ spec:
                     - "{{inputs.parameters.model-device}}"
                     - --run-pretrained-script
                     - "{{inputs.parameters.run-pretrained-script}}"
-                    # gpu-id is optional, you can let run_gpu_inference.py handle it
-                    # via an optional arg if you want.
+                    - --metrics-port
+                    - "9102"
+          
+                  ports:
+                    - name: of-metrics
+                      containerPort: 9102
           
                   resources:
                     limits:
@@ -631,6 +648,72 @@ spec:
           selector: ""
           timeout: 300
         targetNamespace: [[ namespace | default('openfold') ]]
+
+      # 10. Kubernetes PodMonitor for Openfold MSA Argo workflows into Prometheus
+      - name: kubernetes-role-binding
+        description: "Kubernetes PodMonitor for Openfold MSA Argo Workflows"
+        enabled: true
+        dependsOn:
+        kubernetesManifest: |
+          apiVersion: monitoring.coreos.com/v1
+          kind: PodMonitor
+          metadata:
+            name: openfold-msa
+            namespace: monitoring
+            labels:
+              release: kube-prometheus-stack      # adjust if your Prom release label differs
+          spec:
+            namespaceSelector:
+              matchNames:
+                - [[ namespace | default('openfold') ]]
+            selector:
+              matchLabels:
+                app: openfold-msa                 # from mmseq2-cpu template metadata.labels
+            podMetricsEndpoints:
+              - port: msa-metrics                 # from container.ports.name
+                path: /metrics
+                interval: 30s
+                honorLabels: true
+
+        waitForReady: false
+        readinessCheck:
+          type: pod
+          selector: ""
+          timeout: 300
+        targetNamespace: monitoring
+
+      # 11. Kubernetes PodMonitor for Openfold Inference Argo workflows into Prometheus
+      - name: kubernetes-role-binding
+        description: "Kubernetes PodMonitor for Openfold Inference Argo Workflows"
+        enabled: true
+        dependsOn:
+        kubernetesManifest: |
+          apiVersion: monitoring.coreos.com/v1
+          kind: PodMonitor
+          metadata:
+            name: openfold-inference
+            namespace: monitoring
+            labels:
+              release: kube-prometheus-stack      # adjust to match your Prometheus release
+          spec:
+            namespaceSelector:
+              matchNames:
+                -  [[ namespace | default('openfold') ]]
+            selector:
+              matchLabels:
+                app: openfold-inference           # from gpu-openfold template metadata.labels
+            podMetricsEndpoints:
+              - port: of-metrics                  # from container.ports.name
+                path: /metrics
+                interval: 30s
+                honorLabels: true
+
+        waitForReady: false
+        readinessCheck:
+          type: pod
+          selector: ""
+          timeout: 300
+        targetNamespace: monitoring
 ---
 # ConfigMap for Argo values
 apiVersion: v1

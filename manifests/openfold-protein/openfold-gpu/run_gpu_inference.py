@@ -6,11 +6,52 @@ import subprocess
 import time
 from pathlib import Path
 
+from prometheus_client import start_http_server, Histogram, Counter, Gauge
+
+
+# ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
 
 def log(msg: str) -> None:
     ts = time.strftime("%Y-%m-%d %H:%M:%S")
     print(f"[{ts}] [GPU] {msg}", flush=True)
 
+
+# ---------------------------------------------------------------------------
+# Prometheus metrics
+# ---------------------------------------------------------------------------
+
+# Histogram buckets for GPU inference + relaxation latency (seconds)
+INF_BUCKETS = (1, 2, 5, 10, 20, 40, 80, 160, 320, 600, 1200)
+
+# End-to-end GPU stage latency (OpenFold inference + relaxation, as run by this script)
+inference_latency = Histogram(
+    "openfold_inference_total_latency_seconds",
+    "Total latency of OpenFold GPU stage (inference + relaxation) per request",
+    buckets=INF_BUCKETS,
+)
+
+# Counters and gauge
+inference_requests_total = Counter(
+    "openfold_inference_requests_total",
+    "Total number of OpenFold GPU inference requests",
+)
+
+inference_failures_total = Counter(
+    "openfold_inference_failures_total",
+    "Total number of failed OpenFold GPU inference requests",
+)
+
+inference_inflight = Gauge(
+    "openfold_inference_inflight_requests",
+    "Number of in-flight OpenFold GPU inference requests",
+)
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
 def find_fasta_for_protein(fasta_root: Path, protein: str) -> Path:
     """
@@ -50,6 +91,10 @@ def get_first_fasta_tag(fasta_path: Path) -> str:
                 return name if name else "query"
     return "query"
 
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
 
 def main() -> None:
     parser = argparse.ArgumentParser(
@@ -139,8 +184,22 @@ def main() -> None:
         default=os.environ.get("RUN_PRETRAINED_SCRIPT", "run_pretrained_openfold.py"),
         help="Path to run_pretrained_openfold.py inside the container.",
     )
+    parser.add_argument(
+        "--metrics-port",
+        type=int,
+        default=int(os.environ.get("OPENFOLD_METRICS_PORT", "9102")),
+        help=(
+            "Port to expose Prometheus metrics on (0 to disable). "
+            "Default: 9102 or $OPENFOLD_METRICS_PORT."
+        ),
+    )
 
     args = parser.parse_args()
+
+    # Start Prometheus metrics server (if enabled)
+    if args.metrics_port and args.metrics_port > 0:
+        start_http_server(args.metrics_port)
+        log(f"Prometheus metrics server listening on :{args.metrics_port}")
 
     # Normalise paths
     protein_id = args.protein_id
@@ -156,6 +215,10 @@ def main() -> None:
 
     # Ensure the alignments ROOT exists
     if not alignments_root.is_dir():
+        log(f"ERROR: Precomputed alignments ROOT directory not found: {alignments_root}")
+        # Treat as failed inference request
+        inference_requests_total.inc()
+        inference_failures_total.inc()
         raise FileNotFoundError(
             f"Precomputed alignments ROOT directory not found: {alignments_root}"
         )
@@ -165,6 +228,8 @@ def main() -> None:
         fasta_path = find_fasta_for_protein(fasta_root, protein_id)
     except FileNotFoundError as e:
         log(str(e))
+        inference_requests_total.inc()
+        inference_failures_total.inc()
         raise
 
     # Derive the OpenFold target ID from the FASTA header
@@ -172,8 +237,7 @@ def main() -> None:
     target_align_dir = alignments_root / target_id
 
     if not target_align_dir.is_dir():
-        # Fail early with a clear message instead of a cryptic FileNotFoundError
-        raise FileNotFoundError(
+        msg = (
             f"Expected alignment directory for target '{target_id}' not found.\n"
             f"  FASTA:              {fasta_path}\n"
             f"  ALIGNMENTS_ROOT:    {alignments_root}\n"
@@ -182,6 +246,10 @@ def main() -> None:
             "<precomputed-alignments-dir>/<target_id>/ and that the "
             "FASTA header used here matches the CPU's."
         )
+        log("ERROR: " + msg.replace("\n", " "))
+        inference_requests_total.inc()
+        inference_failures_total.inc()
+        raise FileNotFoundError(msg)
 
     # Create a per-protein FASTA directory so OpenFold only sees this one sequence
     # e.g. /data/tmp/fasta_dirs/protein1/
@@ -205,6 +273,8 @@ def main() -> None:
             "Ensure it is present in /data/openfold_weights or update "
             "--openfold-checkpoint-path / OPENFOLD_CHECKPOINT_PATH."
         )
+        inference_requests_total.inc()
+        inference_failures_total.inc()
         raise FileNotFoundError(
             f"Missing OpenFold checkpoint: {checkpoint_path}"
         )
@@ -228,10 +298,7 @@ def main() -> None:
     log(f"  CONFIG_PRESET:     {args.config_preset}")
     log(f"  MODEL_DEVICE:      {args.model_device}")
 
-    start_time = time.time()
-
-    # IMPORTANT:
-    # Now we point OpenFold at per_protein_fasta_dir, which contains ONLY this protein.
+    # Build the command for run_pretrained_openfold.py
     python_exe = sys.executable
     print(f"[GPU] Using Python interpreter: {python_exe}", flush=True)
 
@@ -250,14 +317,27 @@ def main() -> None:
     ]
 
     log(f"Running: {' '.join(cmd)}")
+
+    # Metrics for this GPU inference "job"
+    inference_requests_total.inc()
+    inference_inflight.inc()
+    start_time = time.time()
+
     try:
         subprocess.run(cmd, check=True)
     except subprocess.CalledProcessError as e:
+        duration = time.time() - start_time
+        inference_latency.observe(duration)
+        inference_failures_total.inc()
+        inference_inflight.dec()
         log(f"ERROR during GPU inference for '{protein_id}': {e}")
+        log(f"GPU inference for '{protein_id}' failed after {duration:.1f} seconds")
         raise
-
-    end_time = time.time()
-    log(f"GPU inference for '{protein_id}' completed in {end_time - start_time:.1f} seconds")
+    else:
+        duration = time.time() - start_time
+        inference_latency.observe(duration)
+        inference_inflight.dec()
+        log(f"GPU inference for '{protein_id}' completed in {duration:.1f} seconds")
 
 
 if __name__ == "__main__":
