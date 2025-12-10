@@ -714,6 +714,52 @@ spec:
           selector: ""
           timeout: 300
         targetNamespace: monitoring
+
+      # 12. Install Mol star Viewer for structure visualization
+      - name: kubernetes-role-binding
+        description: "Install Mol star Viewer for structure visualization"
+        enabled: true
+        dependsOn:
+          - openfold-data-pvc
+        kubernetesManifest: |
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: molstar-viewer
+            namespace: [[ namespace | default('openfold') ]]
+            labels:
+              app: molstar-viewer
+          spec:
+            replicas: 1
+            selector:
+              matchLabels:
+                app: molstar-viewer
+            template:
+              metadata:
+                labels:
+                  app: molstar-viewer
+              spec:
+                containers:
+                - name: molstar-viewer
+                  image: wekachrisjen/warp-openfold-molstar:v0.5
+                  imagePullPolicy: Always
+                  ports:
+                  - containerPort: 8080
+                  volumeMounts:
+                    - name: openfold-data
+                      mountPath: /data
+          
+                volumes:
+                  - name: openfold-data
+                    persistentVolumeClaim:
+                      claimName: openfold-data-pvc
+
+        waitForReady: false
+        readinessCheck:
+          type: pod
+          selector: ""
+          timeout: 300
+        targetNamespace: [[ namespace | default('openfold') ]]
 ---
 # ConfigMap for Argo values
 apiVersion: v1

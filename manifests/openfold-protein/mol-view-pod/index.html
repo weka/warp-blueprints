@@ -1,173 +1,259 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-  <meta charset="utf-8" />
-  <title>OpenFold PDB Viewer</title>
-  <style>
-    html, body { margin: 0; height: 100%; overflow: hidden; }
-    #app { width: 100%; height: 100%; }
-  </style>
-  <!-- Tailwind (for styling to match app theme) -->
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>WEKA Mol* File Viewer</title>
+  <!-- Inter font for professional typography -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <!-- TailwindCSS via CDN for simplicity -->
   <script src="https://cdn.tailwindcss.com"></script>
+  <!-- React + MUI via CDN (no build step required) -->
+  <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
+  <script src="https://unpkg.com/@emotion/react@11.11.4/dist/emotion-react.umd.min.js" crossorigin></script>
+  <script src="https://unpkg.com/@emotion/styled@11.11.0/dist/emotion-styled.umd.min.js" crossorigin></script>
+  <script src="https://unpkg.com/@mui/material@5.15.14/umd/material-ui.development.js" crossorigin></script>
 
-  <!-- Mol* from CDN (pin version to avoid breaking API changes) -->
-  <link rel="stylesheet" href="https://unpkg.com/molstar@3.37.0/build/viewer/molstar.css" />
-  <script src="https://unpkg.com/molstar@3.37.0/build/viewer/molstar.js"></script>
+  <!-- Mol* viewer via CDN -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/molstar@latest/build/viewer/molstar.css" />
+  <script src="https://cdn.jsdelivr.net/npm/molstar@latest/build/viewer/molstar.js"></script>
+
+  <style>
+    :root { --weka-purple: #6b2fb3; --weka-purple-dark: #552695; --weka-dark: #0B0C10; }
+
+    body { background: #0b0c10; color: #e5e7eb; font-family: 'Inter', ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, 'Apple Color Emoji', 'Segoe UI Emoji'; }
+
+    .brand-grad { background: linear-gradient(135deg, #0b0c10 0%, #111827 40%, #0b0c10 100%); }
+    .card { background: rgba(31, 41, 55, 0.55); border: 1px solid rgba(255,255,255,0.06); backdrop-filter: blur(8px); }
+
+    .btn-purple { background: var(--weka-purple); color: white; }
+    .btn-purple:hover { background: var(--weka-purple-dark); }
+    .btn-outline { border: 1px solid rgba(255,255,255,0.2); color: #e5e7eb; }
+    .btn-outline:hover { background: rgba(255,255,255,0.06); }
+
+    .muted { color: #9ca3af; }
+    .status-dot { width: 10px; height: 10px; border-radius: 9999px; display: inline-block; margin-left: 8px; }
+
+    .bg-orb { position: absolute; filter: blur(80px); opacity: 0.4; pointer-events: none; }
+    .orb-purple { background: radial-gradient(closest-side, rgba(107,47,179,0.6), transparent 70%); }
+    .orb-blue { background: radial-gradient(closest-side, rgba(59,130,246,0.25), transparent 70%); }
+
+    /* Sidebar scroll styling */
+    .scroll-thin { scrollbar-width: thin; }
+    .scroll-thin::-webkit-scrollbar { width: 8px; height: 8px; }
+    .scroll-thin::-webkit-scrollbar-thumb { background-color: rgba(255,255,255,0.18); border-radius: 8px; }
+    .scroll-thin::-webkit-scrollbar-track { background: transparent; }
+  </style>
 </head>
-<body>
-  <div class="w-full h-full bg-neutral-900 text-neutral-100 flex">
-    <!-- Sidebar: directory browser -->
-    <div class="hidden md:flex md:flex-col md:w-80 border-r border-neutral-800 bg-neutral-950">
-      <div class="px-4 py-3 text-sm font-medium tracking-wide text-neutral-300 border-b border-neutral-800">
-        Browse mounted files (/data → /files)
+<body class="min-h-screen flex flex-col">
+  <header class="brand-grad border-b border-white/10">
+    <div class="max-w-7xl mx-auto px-4 py-4 flex items-center justify-between">
+      <div class="flex items-center gap-3">
+        <div class="w-8 h-8 rounded-sm" style="background: var(--weka-purple);"></div>
+        <h1 class="text-2xl font-semibold tracking-tight">WEKA Mol* Viewer</h1>
       </div>
-      <iframe id="browser" src="/files/" class="flex-1 w-full bg-neutral-950"></iframe>
-      <div class="px-4 py-2 text-xs text-neutral-400 border-t border-neutral-800">
-        Tip: Click a file (.pdb, .cif/.mmcif, .bcif, .gz) to load it. Click folders to navigate.
-      </div>
+      <nav class="flex items-center gap-6 text-sm">
+        <a href="/" class="text-white/80 hover:text-white">Home</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="relative overflow-hidden flex-1">
+    <div class="absolute inset-0 -z-10">
+      <div class="bg-orb orb-purple w-[420px] h-[420px] rounded-full" style="top:-120px; left:-120px;"></div>
+      <div class="bg-orb orb-blue w-[520px] h-[520px] rounded-full" style="bottom:-160px; right:-160px;"></div>
     </div>
 
-    <!-- Main viewer area -->
-    <div class="flex-1 flex flex-col min-w-0">
-      <div class="px-4 py-3 text-sm border-b border-neutral-800 flex items-center justify-between">
-        <div>
-          <span class="text-neutral-300">Mol* Viewer</span>
-          <span id="current-file" class="ml-2 text-neutral-500"></span>
-        </div>
-        <div class="space-x-2">
-          <button id="reset-btn" class="px-2.5 py-1.5 rounded bg-neutral-800 text-neutral-200 hover:bg-neutral-700 text-xs">Reset</button>
-        </div>
+    <section class="px-4 py-4 h-full">
+      <div class="h-full flex gap-4">
+        <!-- Sidebar: File Explorer -->
+        <aside class="w-72 lg:w-80 xl:w-96 card rounded-xl p-4 h-full overflow-auto scroll-thin shrink-0">
+          <div class="flex items-center justify-between mb-3">
+            <h2 class="text-lg font-semibold">File Explorer</h2>
+            <button id="reload-tree" class="btn-outline px-3 py-1.5 rounded-md text-xs">Reload</button>
+          </div>
+          <div class="text-xs muted mb-2">Browsing: /data → /files/</div>
+          <div id="file-tree" class="space-y-1"></div>
+        </aside>
+
+        <!-- Viewer Panel -->
+        <section class="flex-1 min-w-0">
+          <div class="card rounded-xl p-4 h-full flex flex-col min-h-0">
+            <div class="flex items-center justify-between mb-3">
+              <div class="text-sm">Mol* Viewer</div>
+              <div class="flex items-center gap-2">
+                <button id="clear-viewer" class="btn-outline px-3 py-1.5 rounded-md text-xs">Refresh Viewer</button>
+              </div>
+            </div>
+            <div id="molstar-viewer" class="w-full flex-1 min-h-0 bg-black/30 rounded-lg border border-white/10"></div>
+            <div id="current-file" class="text-xs muted mt-2"></div>
+          </div>
+        </section>
       </div>
-      <div class="flex-1 min-h-0" id="app"></div>
-    </div>
-  </div>
+    </section>
+  </main>
+
   <script>
-    const viewer = new molstar.Viewer('app', {
-      layoutIsExpanded: true,
-      layoutShowControls: true,
-      layoutShowRemoteState: false,
-      layoutShowSequence: true,
-      layoutShowLog: false,
-      layoutShowLeftPanel: true,
-    });
+    (function() {
+      const e = React.createElement;
 
-    // Normalize path by stripping any query/hash
-    function normalizePath(path) {
-      const i = path.indexOf('?');
-      const j = path.indexOf('#');
-      let end = path.length;
-      if (i !== -1) end = Math.min(end, i);
-      if (j !== -1) end = Math.min(end, j);
-      return path.slice(0, end);
-    }
+      // Utility: detect if a name is a structure file we can open
+      function isStructureFile(name) {
+        const lower = name.toLowerCase();
+        return lower.endsWith('.pdb') || lower.endsWith('.cif') || lower.endsWith('.mmcif') || lower.endsWith('.bcif') || lower.endsWith('.pdb.gz') || lower.endsWith('.cif.gz') || lower.endsWith('.bcif.gz');
+      }
 
-    // Helper to determine format from file extension
-    function inferFormat(path) {
-      const p = normalizePath(path).toLowerCase();
-      if (p.endsWith('.bcif') || p.endsWith('.bcif.gz')) return 'bcif';
-      if (p.endsWith('.cif') || p.endsWith('.cif.gz') || p.endsWith('.mmcif')) return 'mmcif';
-      return 'pdb';
-    }
+      // Parse Nginx autoindex HTML into entries
+      async function listDirectory(url) {
+        const res = await fetch(url);
+        if (!res.ok) throw new Error('Failed to list ' + url + ': ' + res.status);
+        const html = await res.text();
+        const doc = new DOMParser().parseFromString(html, 'text/html');
+        const links = Array.from(doc.querySelectorAll('a'));
+        const entries = [];
+        for (const a of links) {
+          let name = a.textContent.trim();
+          const href = a.getAttribute('href');
+          if (!href) continue;
+          if (name === '../' || href === '../') continue; // skip parent
+          const isDir = href.endsWith('/');
+          entries.push({ name, href, isDir });
+        }
+        // Sort: dirs first, then files alpha
+        entries.sort((a,b) => (a.isDir === b.isDir) ? a.name.localeCompare(b.name) : (a.isDir ? -1 : 1));
+        return entries;
+      }
 
-    // Helper to determine if the requested resource should be fetched as binary
-    function isBinaryForPath(path) {
-      const p = normalizePath(path).toLowerCase();
-      return p.endsWith('.bcif') || p.endsWith('.bcif.gz') || p.endsWith('.gz');
-    }
+      // Mol* Viewer initialization
+      let viewer = null;
+      async function ensureViewer() {
+        if (!viewer) {
+          viewer = await molstar.Viewer.create('molstar-viewer', {
+            layoutIsExpanded: true,
+            layoutShowControls: true,
+            viewportShowExpand: true,
+            viewportShowSettings: true,
+            pdbProvider: 'rcsb',
+            emdbProvider: 'rcsb'
+          });
+          if (typeof viewer.handleResize === 'function') viewer.handleResize();
+        }
+        return viewer;
+      }
 
-    function isStructureFile(path) {
-      const p = normalizePath(path).toLowerCase();
-      return p.endsWith('.pdb') || p.endsWith('.ent') || p.endsWith('.cif') || p.endsWith('.mmcif') || p.endsWith('.bcif') || p.endsWith('.gz');
-    }
+      async function clearViewer() {
+        const v = await ensureViewer();
+        if (typeof v.clear === 'function') v.clear();
+        else if (v && v.plugin && v.plugin.managers && v.plugin.managers.structure.hierarchy) {
+          try { v.plugin.managers.structure.hierarchy.removeStructure(); } catch (_) {}
+        }
+        document.getElementById('current-file').textContent = '';
+      }
 
-    const currentFileEl = document.getElementById('current-file');
-    const resetBtn = document.getElementById('reset-btn');
+      function guessFormatFromName(name) {
+        const n = name.toLowerCase();
+        if (n.endsWith('.bcif') || n.endsWith('.bcif.gz')) return 'bcif';
+        if (n.endsWith('.cif') || n.endsWith('.mmcif') || n.endsWith('.cif.gz')) return 'mmcif';
+        if (n.endsWith('.pdb') || n.endsWith('.pdb.gz')) return 'pdb';
+        return void 0;
+      }
 
-    async function loadFile(urlPath) {
-      const displayName = urlPath.replace(/^\/files\//, '');
-      const norm = normalizePath(urlPath);
-      const format = inferFormat(norm);
-      const isBinary = isBinaryForPath(norm);
-      currentFileEl.textContent = `— loading ${displayName} ...`;
-      console.debug('Mol* load attempt', {
-        molstarVersion: (window.molstar && molstar.VERSION) || 'unknown',
-        urlPath, norm, format, isBinary
+      async function loadStructure(url, name) {
+        const v = await ensureViewer();
+        const format = guessFormatFromName(name || url);
+        await v.loadStructureFromUrl(url, format ? format : void 0);
+        document.getElementById('current-file').textContent = 'Loaded: ' + (name || url);
+      }
+
+      // Simple tree component without JSX
+      function TreeNode(props) {
+        const { entry, path, onNavigate, onOpen } = props;
+        const isDir = entry.isDir;
+        const icon = isDir ? '📁' : (isStructureFile(entry.name) ? '🧬' : '📄');
+        const labelCls = 'cursor-pointer hover:bg-white/5 rounded px-2 py-1 flex items-center justify-between';
+        const fullPath = path + entry.href;
+
+        function handleClick() {
+          if (isDir) onNavigate(fullPath);
+          else if (isStructureFile(entry.name)) onOpen(fullPath, entry.name);
+        }
+
+        return e('div', { className: 'text-sm' },
+          e('div', { className: labelCls, onClick: handleClick },
+            e('span', { className: 'truncate' }, icon + ' ' + entry.name),
+            !isDir && isStructureFile(entry.name) ? e('button', { className: 'text-xs text-white/60 hover:text-white', onClick: (ev)=>{ev.stopPropagation(); onOpen(fullPath, entry.name);} }, 'Open') : null
+          )
+        );
+      }
+
+      function FileTree() {
+        const React = window.React;
+        const ReactDOM = window.ReactDOM;
+        const { useEffect, useState, useCallback } = React;
+
+        const [path, setPath] = useState('/files/');
+        const [entries, setEntries] = useState([]);
+        const [loading, setLoading] = useState(false);
+        const [error, setError] = useState('');
+
+        const loadPath = useCallback(async (p) => {
+          setLoading(true); setError('');
+          try {
+            const ents = await listDirectory(p);
+            setEntries(ents);
+            setPath(p);
+          } catch (err) {
+            setError(String(err.message || err));
+          } finally { setLoading(false); }
+        }, []);
+
+        useEffect(() => { loadPath(path); }, []);
+
+        function goUp() {
+          if (path === '/files/') return;
+          const trimmed = path.endsWith('/') ? path.slice(0, -1) : path;
+          const parent = trimmed.slice(0, trimmed.lastIndexOf('/') + 1);
+          loadPath(parent || '/files/');
+        }
+
+        return e('div', null,
+          e('div', { className: 'flex items-center justify-between mb-2' },
+            e('div', { className: 'text-xs muted truncate' }, path),
+            e('div', { className: 'flex items-center gap-2' },
+              e('button', { className: 'btn-outline px-2 py-1 rounded text-xs', onClick: goUp }, 'Up')
+            )
+          ),
+          loading ? e('div', { className: 'text-sm muted' }, 'Loading...') : null,
+          error ? e('div', { className: 'text-xs text-red-400' }, error) : null,
+          e('div', { className: 'space-y-1' },
+            entries.map((en, i) => e(TreeNode, { key: i, entry: en, path, onNavigate: loadPath, onOpen: loadStructure }))
+          )
+        );
+      }
+
+      // Mount tree
+      ReactDOM.createRoot(document.getElementById('file-tree')).render(React.createElement(FileTree));
+
+      // Buttons
+      document.getElementById('reload-tree').addEventListener('click', () => {
+        // simple reload by reloading the page section
+        location.reload();
       });
+      document.getElementById('clear-viewer').addEventListener('click', clearViewer);
 
-      // Try the tuple signature first, then fall back to the object signature used by some Mol* builds
-      try {
-        // Signature: (url, format, isBinary, options)
-        await viewer.loadStructureFromUrl(norm, format, isBinary, { customId: norm, label: displayName });
-      } catch (e1) {
-        console.warn('First load method failed, retrying with object signature…', e1);
-        try {
-          // Fallback signature: ({ url, format, isBinary, label })
-          await viewer.loadStructureFromUrl({ url: norm, format, isBinary, label: displayName });
-        } catch (e2) {
-          console.error('Failed to load structure with both methods:', e2);
-          currentFileEl.textContent = '— failed to load';
-          return;
+      // Initialize viewer at start for faster first load
+      ensureViewer();
+
+      // Keep Mol* sized to the window
+      window.addEventListener('resize', () => {
+        if (viewer && typeof viewer.handleResize === 'function') {
+          viewer.handleResize();
         }
-      }
-
-      // If we got here, the structure was queued/loaded successfully
-      try {
-        // Apply a sensible default view if available, but don't fail the load if preset API differs
-        if (molstar && molstar.PresetStructureHierarchy && typeof viewer.applyPreset === 'function') {
-          await viewer.applyPreset(molstar.PresetStructureHierarchy);
-        }
-      } catch (presetErr) {
-        console.debug('Preset application skipped/failed (non-fatal):', presetErr);
-      }
-      currentFileEl.textContent = `— ${displayName}`;
-    }
-
-    // Hook into the autoindex page inside the iframe to intercept file clicks
-    const browser = document.getElementById('browser');
-    function attachBrowserHandlers() {
-      try {
-        const doc = browser.contentDocument || browser.contentWindow.document;
-        if (!doc) return;
-        const anchors = Array.from(doc.querySelectorAll('a[href]'));
-        anchors.forEach(a => {
-          a.addEventListener('click', (e) => {
-            const href = a.getAttribute('href');
-            if (!href) return;
-            // Ignore query/hash/absolute links produced by autoindex controls
-            if (href.startsWith('?') || href.startsWith('#') || href.startsWith('http://') || href.startsWith('https://')) {
-              return;
-            }
-            // Allow directory navigation (usually ends with '/'), intercept files
-            if (href.endsWith('/')) {
-              return; // let iframe navigate
-            }
-            if (isStructureFile(href)) {
-              e.preventDefault();
-              if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation();
-              const basePath = new URL(browser.contentWindow.location.href).pathname; // e.g. /files/subdir/
-              // Resolve possibly relative href against the current directory
-              const resolved = new URL(href, window.location.origin + basePath).pathname;
-              // Sanity: ensure it stays under /files/
-              const urlPath = resolved.startsWith('/files/') ? resolved : ('/files/' + resolved.replace(/^\/+/, ''));
-              loadFile(urlPath);
-            }
-          }, { capture: true });
-        });
-      } catch (err) {
-        console.warn('Could not attach browser handlers:', err);
-      }
-    }
-    browser.addEventListener('load', attachBrowserHandlers);
-
-    // Reset clears the current file and the viewer state
-    resetBtn.addEventListener('click', async () => {
-      try {
-        await viewer.clear();
-        currentFileEl.textContent = '';
-      } catch (e) {
-        console.warn('Reset error:', e);
-      }
-    });
+      });
+    })();
   </script>
 </body>
 </html>
