@@ -1,0 +1,280 @@
+# -------- GLOBAL SETTINGS --------
+global:
+  # Name of the docker registry secret that lets pods pull from nvcr.io
+  ngcImagePullSecretName: ngc-docker-reg-secret
+
+  # Optional: default image pull policy
+  imagePullPolicy: IfNotPresent
+
+
+# -------- VSS APPLICATION (ENGINE + API + UI) --------
+vss:
+  # Optional: override engine image/tag if you want to pin explicitly
+  applicationSpecs:
+    vss-deployment:
+      containers:
+        vss:
+          image:
+            # NVIDIA default repo for VSS engine
+            repository: nvcr.io/nvidia/blueprint/vss-engine
+            tag: "2.4.0"
+
+          # Environment variables injected into the VSS engine container
+          env:
+            # Elasticsearch connection (customize to your ES setup)
+            - name: ES_HOST
+              value: "elasticsearch.default.svc.cluster.local"
+            - name: ES_PORT
+              value: "9200"
+
+            # Example: if you want VSS to know its external URL (optional)
+            # - name: VSS_PUBLIC_BASE_URL
+            #   value: "http://vss.yourdomain.com"
+
+          # Your requested startupProbe failure threshold
+          startupProbe:
+            failureThreshold: 1480
+
+          # Optional: tweak readiness/liveness if needed
+          # readinessProbe:
+          #   failureThreshold: 10
+          # livenessProbe:
+          #   failureThreshold: 10
+
+      # GPU + CPU / mem limits for VSS engine
+      resources:
+        limits:
+          nvidia.com/gpu: 1
+          cpu: "8"
+          memory: "32Gi"
+        requests:
+          nvidia.com/gpu: 1
+          cpu: "4"
+          memory: "16Gi"
+
+      # Optional node affinity (example for GPU nodes)
+      # nodeSelector:
+      #   node-role.kubernetes.io/gpu: "true"
+      #
+      # affinity:
+      #   nodeAffinity:
+      #     requiredDuringSchedulingIgnoredDuringExecution:
+      #       nodeSelectorTerms:
+      #         - matchExpressions:
+      #             - key: node-role.kubernetes.io/gpu
+      #               operator: In
+      #               values:
+      #                 - "true"
+
+  # Service-related overrides
+  service:
+    # If the chart exposes NodePort services, you can override them here
+    # This is just an example; actual names/ports are chart-defined.
+    api:
+      type: NodePort
+      nodePort: 32114   # adjust if needed or leave for auto
+    ui:
+      type: NodePort
+      nodePort: 32206   # adjust if needed or leave for auto
+
+  # Logging configuration for the VSS engine (high-level)
+  logging:
+    level: INFO
+    # You can extend with more structured logging options if chart supports it
+
+
+  # ---- CA-RAG CONFIG OVERRIDE: Use Elasticsearch as vector DB ----
+  configs:
+    ca_rag_config.yaml:
+      functions:
+        summarization:
+          type: batch_summarization
+          params:
+            batch_size: 6
+            batch_max_concurrency: 20
+            prompts:
+              caption: |
+                Write a concise and clear dense caption for the provided warehouse video,
+                focusing on irregular or hazardous events such as boxes falling, workers not
+                wearing PPE, workers falling, workers taking photographs, workers chitchatting,
+                forklift stuck, etc. Start and end each sentence with a time stamp.
+              caption_summarization: |
+                You should summarize the following events of a warehouse in the format
+                start_time:end_time:caption. For start_time and end_time use . to separate
+                seconds, minutes, hours. If during a time segment only regular activities
+                happen, then ignore them, else note any irregular activities in detail.
+                The output should be bullet points in the format
+                start_time:end_time:detailed_event_description.
+                Don't return anything else except the bullet points.
+              summary_aggregation: |
+                You are a warehouse monitoring system. Given the caption in the form
+                start_time:end_time:caption, aggregate the following captions in the format
+                start_time:end_time:event_description. If the event_description is the same
+                as another event_description, aggregate the captions in the format
+                start_time1:end_time1,...,start_timek:end_timek:event_description.
+                If any two adjacent end_time1 and start_time2 is within a few tenths of a
+                second, merge the captions in the format start_time1:end_time2.
+                The output should only contain bullet points. Cluster the output into
+                Unsafe Behavior, Operational Inefficiencies, Potential Equipment Damage,
+                and Unauthorized Personnel.
+          tools:
+            llm: summarization_llm
+            db: elasticsearch_db
+
+        ingestion_function:
+          type: vector_ingestion
+          tools:
+            db: elasticsearch_db
+            llm: chat_llm
+
+        retriever_function:
+          type: vector_retrieval
+          params:
+            top_k: 5
+          tools:
+            db: elasticsearch_db
+            llm: chat_llm
+            reranker: nvidia_reranker
+
+      tools:
+        elasticsearch_db:
+          type: elasticsearch
+          params:
+            # These use the env vars defined above on the container.
+            host: ${ES_HOST}
+            port: ${ES_PORT}
+            # If you need auth/tls, you might extend with:
+            # scheme: https
+            # username: ${ES_USERNAME}
+            # password: ${ES_PASSWORD}
+          tools:
+            embedding: nvidia_embedding
+
+
+# -------- NIM LLM (TEXT LLM FOR CHAT/SUMMARY) --------
+nim-llm:
+  applicationSpecs:
+    llm-deployment:
+      containers:
+        llm:
+          # Example override – pick whatever LLM NIM you want here
+          # Check NVIDIA docs for valid repos/tags.
+          image:
+            repository: nvcr.io/nim/nvidia/llama3-8b-instruct
+            tag: "latest"
+
+          # Example resources — tune to your infra
+          resources:
+            limits:
+              nvidia.com/gpu: 4
+              cpu: "16"
+              memory: "64Gi"
+            requests:
+              nvidia.com/gpu: 4
+              cpu: "8"
+              memory: "32Gi"
+
+          # Optional logging env
+          env:
+            - name: LOG_LEVEL
+              value: "INFO"
+
+      # Optional node affinity for LLM (if you want to pin to specific nodes)
+      # nodeSelector:
+      #   node-role.kubernetes.io/llm-gpu: "true"
+
+
+# -------- NEUMO / NEMO EMBEDDINGS (VECTOR EMBEDDING SERVICE) --------
+nemo-embeddings:
+  applicationSpecs:
+    embeddings-deployment:
+      containers:
+        embeddings:
+          # Override startupProbe.failureThreshold as requested
+          startupProbe:
+            failureThreshold: 1480
+
+          # Example image for NeMo embedding NIM/NeMo service
+          image:
+            repository: nvcr.io/nim/nvidia/nemo-embed
+            tag: "latest"
+
+          resources:
+            limits:
+              nvidia.com/gpu: 1
+              cpu: "8"
+              memory: "32Gi"
+            requests:
+              nvidia.com/gpu: 1
+              cpu: "4"
+              memory: "16Gi"
+
+          env:
+            - name: LOG_LEVEL
+              value: "INFO"
+
+  # If chart exposes a service block for embeddings, you can tune here if needed
+  # service:
+  #   type: ClusterIP
+
+
+# -------- NEMO RERANK (RERANKER / CROSS-ENCODER) --------
+nemo-rerank:
+  applicationSpecs:
+    rerank-deployment:
+      containers:
+        rerank:
+          image:
+            repository: nvcr.io/nim/nvidia/nemo-rerank
+            tag: "latest"
+
+          resources:
+            limits:
+              nvidia.com/gpu: 1
+              cpu: "8"
+              memory: "32Gi"
+            requests:
+              nvidia.com/gpu: 1
+              cpu: "4"
+              memory: "16Gi"
+
+          env:
+            - name: LOG_LEVEL
+              value: "INFO"
+
+
+# -------- OTHER BACKEND COMPONENTS (OPTIONAL / TUNABLE) --------
+# Depending on the chart, you may see sections like milvus, neo4j, minio, etc.
+# Even if you're using Elasticsearch as the CA-RAG DB, the chart may still
+# deploy Milvus/Neo4j for other workflows. You can tune/scale/disable them here
+# if the chart supports it. Example stubs below:
+
+# milvus:
+#   enabled: true
+#   resources:
+#     limits:
+#       cpu: "8"
+#       memory: "16Gi"
+#     requests:
+#       cpu: "4"
+#       memory: "8Gi"
+
+# neo4j:
+#   enabled: true
+#   resources:
+#     limits:
+#       cpu: "4"
+#       memory: "16Gi"
+#     requests:
+#       cpu: "2"
+#       memory: "8Gi"
+
+# minio:
+#   enabled: true
+#   resources:
+#     limits:
+#       cpu: "4"
+#       memory: "8Gi"
+#     requests:
+#       cpu: "2"
+#       memory: "4Gi"

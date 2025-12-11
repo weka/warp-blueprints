@@ -1,0 +1,535 @@
+apiVersion: warp.io/v1alpha1
+kind: WekaAppStore
+metadata:
+  name: nvidia-vss
+  namespace: vss
+spec:
+  appStack:
+    components:
+        # 1. NVIDIA VSS Blueprint Install
+      - name: nvidia-vss
+        description: "NVIDIA Official VSS Blueprint"
+        enabled: true
+        dependsOn:
+          - service-account-and-rolebinding
+          - docker-registry-secret
+          - elasticsearch-vector
+        helmChart:
+          name: "https://helm.ngc.nvidia.com/nvidia/blueprint"
+          version: "2.4.0"
+          releaseName: "nvidia-blueprint-vss"
+          crdsStrategy: Auto
+        valuesFiles:
+          - kind: ConfigMap
+            name: vss-config
+            key: vss_values.yaml
+        waitForReady: true
+        readinessCheck:
+          type: pod
+          selector: "app.kubernetes.io/instance=argo-workflows"
+          timeout: 300
+        targetNamespace: vss
+
+        # 2. Deploy Elasticsearch for VSS
+      - name: elasticsearch-vector
+        description: "Elastic Search Vector 8.x"
+        enabled: true
+        dependsOn:
+          - vss-storage-class
+        helmChart:
+          name: "https://helm.elastic.co"
+          version: "8.5.1"
+          releaseName: "elasticsearch"
+          crdsStrategy: Auto
+        valuesFiles:
+          - kind: ConfigMap
+            name: es-config
+            key: es_values.yaml
+        waitForReady: true
+        readinessCheck:
+          type: pod
+          selector: "app=elasticsearch-master"
+          timeout: 300
+        targetNamespace: vss
+
+      #2. Create NGC Docker Secret from NGC Secret
+      - name: docker-registry-secret
+        description: "Takes NGC Secret with API Key and creates a docker-registry secret"
+        enabled: true
+        dependsOn:
+          - service-account-and-rolebinding
+        kubernetesManifest: |
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: create-ngc-docker-secret
+            namespace: vss
+          spec:
+            backoffLimit: 1
+            template:
+              spec:
+                serviceAccountName: ngc-secret-creator
+                restartPolicy: Never
+                containers:
+                  - name: create-ngc-docker-secret
+                    image: bitnami/kubectl:latest
+                    command:
+                      - /bin/sh
+                      - -c
+                      - |
+                        set -euo pipefail
+          
+                        NAMESPACE=$(cat /var/run/secrets/kubernetes.io/serviceaccount/namespace)
+                        SECRET_NAME_SOURCE="nvidia-api-key"
+                        SECRET_NAME_TARGET="ngc-docker-reg-secret"
+          
+                        echo "Using namespace: ${NAMESPACE}"
+                        echo "Reading nvidia-api-key from secret: ${SECRET_NAME_SOURCE}"
+          
+                        # 1) Extract NGC_API_KEY from the generic secret
+                        NGC_API_KEY=$(kubectl get secret "${SECRET_NAME_SOURCE}" \
+                          -n "${NAMESPACE}" \
+                          -o jsonpath='{.data.NVIDIA_API_KEY}' | base64 -d)
+          
+                        if [ -z "${NGC_API_KEY}" ]; then
+                          echo "ERROR: NGC_API_KEY is empty or secret ${SECRET_NAME_SOURCE} not found" >&2
+                          exit 1
+                        fi
+          
+                        echo "Deleting existing ${SECRET_NAME_TARGET} (if any)..."
+                        kubectl delete secret "${SECRET_NAME_TARGET}" -n "${NAMESPACE}" --ignore-not-found=true
+          
+                        echo "Creating docker-registry secret ${SECRET_NAME_TARGET}..."
+                        kubectl create secret docker-registry "${SECRET_NAME_TARGET}" \
+                          -n "${NAMESPACE}" \
+                          --docker-server=nvcr.io \
+                          --docker-username='$oauthtoken' \
+                          --docker-password="${NGC_API_KEY}"
+
+        waitForReady: false
+        readinessCheck:
+          type: pod
+          selector: ""
+          timeout: 300
+        targetNamespace: vss
+
+      #2. ServiceAccount and RoleBinding for NGC Secret Creator
+      - name: service-account-and-rolebinding
+        description: "ServiceAccount and RoleBinding for NGC Secret Creator"
+        enabled: true
+        kubernetesManifest: |
+          apiVersion: v1
+          kind: ServiceAccount
+          metadata:
+            name: ngc-secret-creator
+            namespace: vss
+          ---
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: Role
+          metadata:
+            name: ngc-secret-creator-role
+            namespace: vss
+          rules:
+            - apiGroups: [""]
+              resources: ["secrets"]
+              verbs: ["get", "create", "delete", "update", "patch"]
+          ---
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: RoleBinding
+          metadata:
+            name: ngc-secret-creator-binding
+            namespace: vss
+          subjects:
+            - kind: ServiceAccount
+              name: ngc-secret-creator
+              namespace: vss
+          roleRef:
+            kind: Role
+            name: ngc-secret-creator-role
+            apiGroup: rbac.authorization.k8s.io
+
+        waitForReady: false
+        readinessCheck:
+          type: pod
+          selector: ""
+          timeout: 300
+        targetNamespace: vss
+
+      #2. Storage Class for ElasticSearch DB
+      - name: vss-storage-class
+        description: "Storage Class for ElasticSearch DB"
+        enabled: true
+        kubernetesManifest: |
+          apiVersion: storage.k8s.io/v1
+          kind: StorageClass
+          metadata:
+            name: weka-vss-storage-class
+          provisioner: csi.weka.io
+          
+          # For production I’d usually keep data by default
+          reclaimPolicy: Retain
+          volumeBindingMode: Immediate
+          allowVolumeExpansion: true
+          
+          parameters:
+            # Directory-backed volumes on an existing WEKA filesystem
+            volumeType: dir/v1
+            filesystemName: default
+          
+            # Enforce WEKA directory quota strictly (HARD or SOFT)
+            capacityEnforcement: HARD
+          
+            # Optional: set ownership / permissions on the root of each volume
+            ownerUid: "1000"
+            ownerGid: "1000"
+            permissions: "0777"
+          
+            # CSI API secret wiring – names/namespaces MUST exist in your cluster
+            csi.storage.k8s.io/provisioner-secret-name: &secretName csi-wekafs-api-secret
+            csi.storage.k8s.io/provisioner-secret-namespace: &secretNamespace csi-wekafs
+          
+            csi.storage.k8s.io/controller-publish-secret-name: *secretName
+            csi.storage.k8s.io/controller-publish-secret-namespace: *secretNamespace
+            csi.storage.k8s.io/controller-expand-secret-name: *secretName
+            csi.storage.k8s.io/controller-expand-secret-namespace: *secretNamespace
+            csi.storage.k8s.io/node-stage-secret-name: *secretName
+            csi.storage.k8s.io/node-stage-secret-namespace: *secretNamespace
+            csi.storage.k8s.io/node-publish-secret-name: *secretName
+            csi.storage.k8s.io/node-publish-secret-namespace: *secretNamespace
+
+        waitForReady: false
+        readinessCheck:
+          type: pod
+          selector: ""
+          timeout: 300
+        targetNamespace: vss
+---
+# ConfigMap for NVIDIA VSS values
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vss-config
+  namespace: vss
+data:
+  vss_values.yaml: |
+    # -------- GLOBAL SETTINGS --------
+    global:
+      # Name of the docker registry secret that lets pods pull from nvcr.io
+      ngcImagePullSecretName: ngc-docker-reg-secret
+
+      # Optional: default image pull policy
+      imagePullPolicy: IfNotPresent
+
+
+    # -------- VSS APPLICATION (ENGINE + API + UI) --------
+    vss:
+      # Optional: override engine image/tag if you want to pin explicitly
+      applicationSpecs:
+        vss-deployment:
+          containers:
+            vss:
+              image:
+                # NVIDIA default repo for VSS engine
+                repository: nvcr.io/nvidia/blueprint/vss-engine
+                tag: "2.4.0"
+
+              # Environment variables injected into the VSS engine container
+              env:
+                # Elasticsearch connection (customize to your ES setup)
+                - name: ES_HOST
+                  value: "elasticsearch.default.svc.cluster.local"
+                - name: ES_PORT
+                  value: "9200"
+
+                # Example: if you want VSS to know its external URL (optional)
+                # - name: VSS_PUBLIC_BASE_URL
+                #   value: "http://vss.yourdomain.com"
+
+              # Your requested startupProbe failure threshold
+              startupProbe:
+                failureThreshold: 1480
+
+              # Optional: tweak readiness/liveness if needed
+              # readinessProbe:
+              #   failureThreshold: 10
+              # livenessProbe:
+              #   failureThreshold: 10
+
+          # GPU + CPU / mem limits for VSS engine
+          resources:
+            limits:
+              nvidia.com/gpu: 1
+              cpu: "8"
+              memory: "32Gi"
+            requests:
+              nvidia.com/gpu: 1
+              cpu: "4"
+              memory: "16Gi"
+
+          # Optional node affinity (example for GPU nodes)
+          # nodeSelector:
+          #   node-role.kubernetes.io/gpu: "true"
+          #
+          # affinity:
+          #   nodeAffinity:
+          #     requiredDuringSchedulingIgnoredDuringExecution:
+          #       nodeSelectorTerms:
+          #         - matchExpressions:
+          #             - key: node-role.kubernetes.io/gpu
+          #               operator: In
+          #               values:
+          #                 - "true"
+
+      # Service-related overrides
+      service:
+        # If the chart exposes NodePort services, you can override them here
+        # This is just an example; actual names/ports are chart-defined.
+        api:
+          type: NodePort
+          nodePort: 32114   # adjust if needed or leave for auto
+        ui:
+          type: NodePort
+          nodePort: 32206   # adjust if needed or leave for auto
+
+      # Logging configuration for the VSS engine (high-level)
+      logging:
+        level: INFO
+        # You can extend with more structured logging options if chart supports it
+
+
+      # ---- CA-RAG CONFIG OVERRIDE: Use Elasticsearch as vector DB ----
+      configs:
+        ca_rag_config.yaml:
+          functions:
+            summarization:
+              type: batch_summarization
+              params:
+                batch_size: 6
+                batch_max_concurrency: 20
+                prompts:
+                  caption: |
+                    Write a concise and clear dense caption for the provided warehouse video,
+                    focusing on irregular or hazardous events such as boxes falling, workers not
+                    wearing PPE, workers falling, workers taking photographs, workers chitchatting,
+                    forklift stuck, etc. Start and end each sentence with a time stamp.
+                  caption_summarization: |
+                    You should summarize the following events of a warehouse in the format
+                    start_time:end_time:caption. For start_time and end_time use . to separate
+                    seconds, minutes, hours. If during a time segment only regular activities
+                    happen, then ignore them, else note any irregular activities in detail.
+                    The output should be bullet points in the format
+                    start_time:end_time:detailed_event_description.
+                    Don't return anything else except the bullet points.
+                  summary_aggregation: |
+                    You are a warehouse monitoring system. Given the caption in the form
+                    start_time:end_time:caption, aggregate the following captions in the format
+                    start_time:end_time:event_description. If the event_description is the same
+                    as another event_description, aggregate the captions in the format
+                    start_time1:end_time1,...,start_timek:end_timek:event_description.
+                    If any two adjacent end_time1 and start_time2 is within a few tenths of a
+                    second, merge the captions in the format start_time1:end_time2.
+                    The output should only contain bullet points. Cluster the output into
+                    Unsafe Behavior, Operational Inefficiencies, Potential Equipment Damage,
+                    and Unauthorized Personnel.
+              tools:
+                llm: summarization_llm
+                db: elasticsearch_db
+
+            ingestion_function:
+              type: vector_ingestion
+              tools:
+                db: elasticsearch_db
+                llm: chat_llm
+
+            retriever_function:
+              type: vector_retrieval
+              params:
+                top_k: 5
+              tools:
+                db: elasticsearch_db
+                llm: chat_llm
+                reranker: nvidia_reranker
+
+          tools:
+            elasticsearch_db:
+              type: elasticsearch
+              params:
+                # These use the env vars defined above on the container.
+                host: elasticsearch-master.vss.svc.cluster.local
+                port: 9200
+                # If you need auth/tls, you might extend with:
+                # scheme: https
+                # username: ${ES_USERNAME}
+                # password: ${ES_PASSWORD}
+              tools:
+                embedding: nvidia_embedding
+
+
+    # -------- NIM LLM (TEXT LLM FOR CHAT/SUMMARY) --------
+    nim-llm:
+      applicationSpecs:
+        llm-deployment:
+          containers:
+            llm:
+              # Example override – pick whatever LLM NIM you want here
+              # Check NVIDIA docs for valid repos/tags.
+              image:
+                repository: nvcr.io/nim/nvidia/llama3-8b-instruct
+                tag: "latest"
+
+              # Example resources — tune to your infra
+              resources:
+                limits:
+                  nvidia.com/gpu: 4
+                  cpu: "16"
+                  memory: "64Gi"
+                requests:
+                  nvidia.com/gpu: 4
+                  cpu: "8"
+                  memory: "32Gi"
+
+              # Optional logging env
+              env:
+                - name: LOG_LEVEL
+                  value: "INFO"
+
+          # Optional node affinity for LLM (if you want to pin to specific nodes)
+          # nodeSelector:
+          #   node-role.kubernetes.io/llm-gpu: "true"
+
+
+    # -------- NEUMO / NEMO EMBEDDINGS (VECTOR EMBEDDING SERVICE) --------
+    nemo-embeddings:
+      applicationSpecs:
+        embeddings-deployment:
+          containers:
+            embeddings:
+              # Override startupProbe.failureThreshold as requested
+              startupProbe:
+                failureThreshold: 1480
+
+              # Example image for NeMo embedding NIM/NeMo service
+              image:
+                repository: nvcr.io/nim/nvidia/nemo-embed
+                tag: "latest"
+
+              resources:
+                limits:
+                  nvidia.com/gpu: 1
+                  cpu: "8"
+                  memory: "32Gi"
+                requests:
+                  nvidia.com/gpu: 1
+                  cpu: "4"
+                  memory: "16Gi"
+
+              env:
+                - name: LOG_LEVEL
+                  value: "INFO"
+
+      # If chart exposes a service block for embeddings, you can tune here if needed
+      # service:
+      #   type: ClusterIP
+
+
+    # -------- NEMO RERANK (RERANKER / CROSS-ENCODER) --------
+    nemo-rerank:
+      applicationSpecs:
+        rerank-deployment:
+          containers:
+            rerank:
+              image:
+                repository: nvcr.io/nim/nvidia/nemo-rerank
+                tag: "latest"
+
+              resources:
+                limits:
+                  nvidia.com/gpu: 1
+                  cpu: "8"
+                  memory: "32Gi"
+                requests:
+                  nvidia.com/gpu: 1
+                  cpu: "4"
+                  memory: "16Gi"
+
+              env:
+                - name: LOG_LEVEL
+                  value: "INFO"
+
+
+    # -------- OTHER BACKEND COMPONENTS (OPTIONAL / TUNABLE) --------
+   milvus:
+     enabled: false
+     resources:
+       limits:
+         cpu: "8"
+         memory: "16Gi"
+       requests:
+         cpu: "4"
+         memory: "8Gi"
+
+   neo4j:
+     enabled: true
+     resources:
+       limits:
+         cpu: "4"
+         memory: "16Gi"
+       requests:
+         cpu: "2"
+         memory: "8Gi"
+
+   minio:
+     enabled: false
+     resources:
+       limits:
+         cpu: "4"
+         memory: "8Gi"
+       requests:
+         cpu: "2"
+         memory: "4Gi"
+---
+# ConfigMap for NVIDIA VSS values
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: es-config
+  namespace: vss
+data:
+  es_values.yaml: |
+    # Single-node Elasticsearch, good for POC / dev.
+    # For prod, bump replicas and resources.
+
+    replicas: 1
+
+    imageTag: "8.15.0"   # or latest 8.x; check Helm docs / Docker tags
+
+    esConfig:
+      elasticsearch.yml: |
+        xpack.security.enabled: false
+        xpack.security.transport.ssl.enabled: false
+        # If you later want auth/TLS, set these to true and configure certs/users.
+
+        # Optional tuning for vector search / kNN (defaults are usually fine)
+        # search.max_buckets: 100000
+
+    resources:
+      requests:
+        cpu: "1"
+        memory: "4Gi"
+      limits:
+        cpu: "2"
+        memory: "8Gi"
+
+    volumeClaimTemplate:
+      accessModes: [ "ReadWriteMany" ]
+      storageClassName: "weka-vss-storage-class"
+      resources:
+        requests:
+          storage: 50Gi
+
+    # Service to be used by VSS
+    service:
+      type: ClusterIP
+      port: 9200
+
+    # Turn off Kibana / other extras here; this chart is Elasticsearch only.
