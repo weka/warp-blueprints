@@ -232,7 +232,20 @@ data:
                 # NVIDIA default repo for VSS engine
                 repository: nvcr.io/nvidia/blueprint/vss-engine
                 tag: "2.4.0"
-
+                
+      # ---- STORAGE for VSS engine NGC model cache PVC ----
+      storageClaims:
+        ngc-model-cache-pvc:
+          annotations:
+            helm.sh/resource-policy: keep
+          spec:
+            accessModes:
+              - ReadWriteMany
+            storageClassName: weka-vss-storage-class
+            resources:
+              requests:
+                storage: 100Gi
+                
               # Environment variables injected into the VSS engine container
               env:
                 # Elasticsearch connection (customize to your ES setup)
@@ -388,18 +401,29 @@ data:
                   cpu: "8"
                   memory: "32Gi"
 
-              # Optional logging env
-              env:
-                - name: LOG_LEVEL
-                  value: "INFO"
+      # ---- STORAGE: use WEKA StorageClass for model cache ----
+      persistence:
+        enabled: true
+        existingClaim: ""                 # let the chart create the PVC
+        storageClass: weka-vss-storage-class
+        accessMode: ReadWriteMany
+        size: 200Gi
+        annotations: {}
 
-          # Optional node affinity for LLM (if you want to pin to specific nodes)
-          # nodeSelector:
-          #   node-role.kubernetes.io/llm-gpu: "true"
+      # make sure hostPath is *not* used
+      hostPath:
+        enabled: false
+        path: /model-store
 
+      # also keep NFS disabled unless you really want it
+      nfs:
+        enabled: false
+        server: nfs-server.example.com
+        path: /exports
+        readOnly: false
 
     # -------- NEUMO / NEMO EMBEDDINGS (VECTOR EMBEDDING SERVICE) --------
-    nemo-embeddings:
+    nemo-embedding:
       applicationSpecs:
         embeddings-deployment:
           containers:
@@ -426,6 +450,17 @@ data:
               env:
                 - name: LOG_LEVEL
                   value: "INFO"
+      storageClaims:
+        nim-cache-pvc:
+          annotations:
+            helm.sh/resource-policy: keep
+          spec:
+            accessModes:
+              - ReadWriteOnce
+            storageClassName: weka-vss-storage-class   # your WEKA SC
+            resources:
+              requests:
+                storage: 10Gi
 
       # If chart exposes a service block for embeddings, you can tune here if needed
       # service:
@@ -455,38 +490,181 @@ data:
               env:
                 - name: LOG_LEVEL
                   value: "INFO"
-
-
+      storageClaims:
+        nim-cache-pvc:
+          annotations:
+            helm.sh/resource-policy: keep
+          spec:
+            accessModes:
+              - ReadWriteOnce
+            storageClassName: weka-vss-storage-class 
+            resources:
+              requests:
+                storage: 10Gi
+             
     # -------- OTHER BACKEND COMPONENTS (OPTIONAL / TUNABLE) --------
-   milvus:
-     enabled: false
-     resources:
-       limits:
-         cpu: "8"
-         memory: "16Gi"
-       requests:
-         cpu: "4"
-         memory: "8Gi"
+    
+    # Milvus (you currently have it disabled, but if you ever enable it,
+    # these persistence settings will kick in)
+    milvus:
+      enabled: false
+      resources:
+        limits:
+          cpu: "8"
+          memory: "16Gi"
+        requests:
+          cpu: "4"
+          memory: "8Gi"
+      # Example persistence block (used if you turn enabled: true)
+      persistence:
+        enabled: false
+        data:
+          storageClassName: weka-vss-storage-class
+          resources:
+            requests:
+              storage: 200Gi
+    
+    # Milvus MinIO (object store for Milvus)
+    milvus-minio:
+      persistence:
+        enabled: false
+        storageClass: weka-vss-storage-class
+        size: 100Gi
+    
+    # Neo4j graph DB
+    neo4j:
+      enabled: true
+      resources:
+        limits:
+          cpu: "4"
+          memory: "16Gi"
+        requests:
+          cpu: "2"
+          memory: "8Gi"
+          
+      # --- Neo4j persistent storage on WEKA ---
+      storageClaims:
+        data:
+          annotations:
+            helm.sh/resource-policy: keep
+          spec:
+            accessModes:
+              - ReadWriteOnce
+            storageClassName: weka-vss-storage-class
+            resources:
+              requests:
+                storage: 100Gi
 
-   neo4j:
-     enabled: true
-     resources:
-       limits:
-         cpu: "4"
-         memory: "16Gi"
-       requests:
-         cpu: "2"
-         memory: "8Gi"
-
-   minio:
-     enabled: false
-     resources:
-       limits:
-         cpu: "4"
-         memory: "8Gi"
-       requests:
-         cpu: "2"
-         memory: "4Gi"
+      extraPodVolumes:
+        - name: secret-db-username-volume
+          secret:
+            secretName: graph-db-creds-secret
+            items:
+              - key: username
+                path: db-username
+        - name: secret-db-password-volume
+          secret:
+            secretName: graph-db-creds-secret
+            items:
+              - key: password
+                path: db-password
+      extraPodVolumeMounts:
+        - name: secret-db-username-volume
+          mountPath: /secrets/db-username
+          subPath: db-username
+          readOnly: true
+        - name: secret-db-password-volume
+          mountPath: /secrets/db-password
+          subPath: db-password
+          readOnly: true
+    
+    # Main MinIO (you have it disabled; persistence only matters if enabled)
+    minio:
+      enabled: false
+      resources:
+        limits:
+          cpu: "4"
+          memory: "8Gi"
+        requests:
+          cpu: "2"
+          memory: "4Gi"
+      persistence:
+        enabled: false
+        storageClass: weka-vss-storage-class
+        size: 100Gi
+      extraPodVolumes:
+        - name: secret-access-key-volume
+          secret:
+            secretName: minio-creds-secret
+            items:
+              - key: access-key
+                path: access-key
+        - name: secret-secret-key-volume
+          secret:
+            secretName: minio-creds-secret
+            items:
+              - key: secret-key
+                path: secret-key
+      extraPodVolumeMounts:
+        - name: secret-access-key-volume
+          mountPath: /secrets/access-key
+          subPath: access-key
+          readOnly: true
+        - name: secret-secret-key-volume
+          mountPath: /secrets/secret-key
+          subPath: secret-key
+          readOnly: true
+    
+    # Internal Elasticsearch subchart (for VSS, separate from your external ES)
+    elasticsearch:
+      storageClaims:
+        data:
+          accessModes:
+            - ReadWriteMany
+          storageClassName: weka-vss-storage-class
+          resources:
+            requests:
+              storage: 100Gi
+    
+    # Arango DB (metadata DB)
+    arango-db:
+      persistence:
+        enabled: false
+        storageClassName: weka-vss-storage-class
+        size: 100Gi
+      extraPodVolumes:
+        - name: secret-db-username-volume
+          secret:
+            secretName: arango-db-creds-secret
+            items:
+              - key: username
+                path: db-username
+        - name: secret-db-password-volume
+          secret:
+            secretName: arango-db-creds-secret
+            items:
+              - key: password
+                path: db-password
+      extraPodVolumeMounts:
+        - name: secret-db-username-volume
+          mountPath: /secrets/db-username
+          subPath: db-username
+          readOnly: true
+        - name: secret-db-password-volume
+          mountPath: /secrets/db-password
+          subPath: db-password
+          readOnly: true
+    
+    # Etcd (used by Milvus if you keep it)
+    etcd:
+      storageClaims:
+        data:
+          accessModes:
+            - ReadWriteMany
+          storageClassName: weka-vss-storage-class
+          resources:
+            requests:
+              storage: 20Gi
 ---
 # ConfigMap for NVIDIA VSS values
 apiVersion: v1
