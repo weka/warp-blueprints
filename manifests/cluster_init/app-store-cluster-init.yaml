@@ -46,7 +46,7 @@ spec:
       #NVIDIA GPU Operator
       - name: nvidia-operator
         description: "Certificate management for Kubernetes"
-        enabled: false
+        enabled: true
         dependsOn:
           - prometheus-adapter
         helmChart:
