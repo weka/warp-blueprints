@@ -1,0 +1,109 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: openwebui-rag-bridge
+  namespace: rag
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: openwebui-rag-bridge
+  template:
+    metadata:
+      labels:
+        app: openwebui-rag-bridge
+    spec:
+      containers:
+      - name: bridge
+        image: wekachrisjen/rag-bridge:v0.14
+        ports:
+        - containerPort: 8080
+          name: http
+        env:
+        # ---------------------------------------------------
+        # Open WebUI internal access
+        # ---------------------------------------------------
+        - name: OPENWEBUI_BASE
+          value: "http://open-webui.rag.svc.cluster.local"
+
+        # This is the identity endpoint we validated
+        - name: OPENWEBUI_ME_PATH
+          value: "/api/v1/users/me"
+
+        # ---------------------------------------------------
+        # RAG Gateway internal endpoint
+        # ---------------------------------------------------
+        - name: RAG_GATEWAY_URL
+          value: "http://rag-gateway.rag.svc.cluster.local/tool"
+
+        # API key rag-bridge must send to rag-gateway
+        - name: RAG_GATEWAY_TOOL_API_KEY
+          value: "SecureRAGLibrarian2026TestKey"
+
+        # ---------------------------------------------------
+        # Tool security (Open WebUI -> rag-bridge)
+        # ---------------------------------------------------
+        # This must match what you configure in Open WebUI Tool headers
+        - name: TOOL_API_KEY
+          value: "SecureRAGLibrarian2026TestKey"
+
+        - name: KEYCLOAK_BASE
+          value: "http://keycloak-keycloakx-http.rag.svc.cluster.local:8080/auth"
+        - name: KEYCLOAK_REALM
+          value: "rag-gateway"
+        - name: KEYCLOAK_CLIENT_ID
+          value: "rag-bridge"
+        - name: KEYCLOAK_CLIENT_SECRET
+          value: "Kq9AltuPihFATALlggTljXi0CyNnnccb"
+
+          # match your Keycloak user attribute keys
+        - name: KC_UID_ATTR
+          value: "uid"
+        - name: KC_GIDS_ATTR
+          value: "gids"
+
+        # ---------------------------------------------------
+        # Identity mapping (Option B1)
+        # ---------------------------------------------------
+        # Map Open WebUI user identifier → uid/gids for ACL filtering
+        #
+        # KEY MUST MATCH FIELD RETURNED BY /api/v1/users/me
+        #
+        - name: USER_MAP_JSON
+          value: >
+            {
+              "admin@example.com": { "uid": 1000, "gids": [1000, 1001] },
+              "john@example.com": { "uid": 2000, "gids": [2000] }
+            }
+
+        # Optional: which field from /users/me to use
+        # (email | username | id)
+        - name: USER_LOOKUP_FIELD
+          value: "email"
+
+        # ---------------------------------------------------
+        # Debugging (temporary)
+        # ---------------------------------------------------
+        - name: BRIDGE_DEBUG
+          value: "true"
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
+          limits:
+            cpu: "500m"
+            memory: "256Mi"
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: openwebui-rag-bridge
+  namespace: rag
+spec:
+  selector:
+    app: openwebui-rag-bridge
+  ports:
+  - port: 80
+    targetPort: 8080
+  type: ClusterIP

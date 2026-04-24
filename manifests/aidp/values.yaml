@@ -1,0 +1,310 @@
+# values.yaml — nvidia-blueprint-rag v2.3.0
+# Target: EKS with A10G (g5.*) GPU nodes tainted: nvidia.com/gpu=true:NoSchedule
+# Goal: RAG + Milvus + NV-Ingest + NIM LLM (A10-friendly) + embedding + reranker
+
+fullnameOverride: "rag-server"
+
+# -------------------------------------------------------------------
+# Global scheduling
+# -------------------------------------------------------------------
+# Keep global empty so CPU services (rag-server/ingestor-server/frontend)
+# can schedule on non-GPU nodes (m5) without being blocked by GPU taints.
+nodeSelector: {}
+affinity: {}
+tolerations: []
+
+# -------------------------------------------------------------------
+# rag-server (CPU) — keep off GPU nodes
+# -------------------------------------------------------------------
+resources:
+  requests:
+    memory: "8Gi"
+  limits:
+    memory: "32Gi"   # lowered from 64Gi to reduce CPU-node pressure; raise if needed
+
+server:
+  workers: 8
+
+envVars:
+  # MinIO
+  MINIO_ENDPOINT: "rag-minio:9000"
+  MINIO_ACCESSKEY: "minioadmin"
+  MINIO_SECRETKEY: "minioadmin"
+
+  # Vector DB
+  APP_VECTORSTORE_URL: "http://milvus:19530"
+  APP_VECTORSTORE_NAME: "milvus"
+
+  # For stability on A10 clusters, start CPU search (Milvus CPU) unless you *need* GPU indexes
+  APP_VECTORSTORE_INDEXTYPE: "AUTOINDEX"
+  APP_VECTORSTORE_SEARCHTYPE: "dense"
+  APP_VECTORSTORE_ENABLEGPUSEARCH: "False"
+  APP_VECTORSTORE_EF: "100"
+
+  COLLECTION_NAME: "multimodal_data"
+  APP_RETRIEVER_SCORETHRESHOLD: "0.25"
+  VECTOR_DB_TOPK: "50"
+  APP_RETRIEVER_TOPK: "10"
+
+  # ----------------------------
+  # LLM / Rewriter / Filter Gen
+  # ----------------------------
+  # You are now running the LLM via nim-llm service (below)
+  APP_LLM_SERVERURL: "nim-llm:8000"
+  APP_LLM_MODELNAME: "meta/llama-3.1-8b-instruct"
+
+  APP_QUERYREWRITER_SERVERURL: "nim-llm:8000"
+  APP_QUERYREWRITER_MODELNAME: "meta/llama-3.1-8b-instruct"
+
+  APP_FILTEREXPRESSIONGENERATOR_SERVERURL: "nim-llm:8000"
+  APP_FILTEREXPRESSIONGENERATOR_MODELNAME: "meta/llama-3.1-8b-instruct"
+  ENABLE_FILTER_GENERATOR: "False"
+
+  # A10-friendly defaults (prevents vLLM KV-cache blowups)
+  LLM_MAX_TOKENS: "4096"
+  LLM_TEMPERATURE: "0"
+  LLM_TOP_P: "1.0"
+
+  # Embeddings NIM
+  APP_EMBEDDINGS_SERVERURL: "nemoretriever-embedding-ms:8000"
+  APP_EMBEDDINGS_MODELNAME: "nvidia/llama-3.2-nv-embedqa-1b-v2"
+
+  # Reranker NIM
+  APP_RANKING_SERVERURL: "nemoretriever-ranking-ms:8000"
+  APP_RANKING_MODELNAME: "nvidia/llama-3.2-nv-rerankqa-1b-v2"
+  ENABLE_RERANKER: "True"
+  RERANKER_CONFIDENCE_THRESHOLD: "0.0"
+
+  # General
+  ENABLE_CITATIONS: "True"
+  ENABLE_GUARDRAILS: "False"
+  LOGLEVEL: "INFO"
+  ENABLE_MULTITURN: "True"
+  ENABLE_QUERYREWRITER: "False"
+  CONVERSATION_HISTORY: "5"
+  ENABLE_SOURCE_METADATA: "true"
+  FILTER_THINK_TOKENS: "true"
+
+  # Reflection (keep off initially)
+  ENABLE_REFLECTION: "false"
+  REFLECTION_LLM: "meta/llama-3.1-8b-instruct"
+  REFLECTION_LLM_SERVERURL: "nim-llm:8000"
+
+# -------------------------------------------------------------------
+# ingestor-server (CPU) — keep off GPU nodes
+# -------------------------------------------------------------------
+ingestor-server:
+  enabled: true
+  nodeSelector: {}     # IMPORTANT: do NOT set NodeType=gpu here
+  tolerations: []      # IMPORTANT: do NOT tolerate GPU taint here
+
+  replicaCount: 1
+
+  resources:
+    requests:
+      memory: "8Gi"
+      cpu: "500m"
+    limits:
+      memory: "16Gi"
+      cpu: "4"
+
+  envVars:
+    APP_VECTORSTORE_URL: "http://milvus:19530"
+    APP_VECTORSTORE_NAME: "milvus"
+    APP_VECTORSTORE_SEARCHTYPE: "dense"
+    APP_VECTORSTORE_ENABLEGPUINDEX: "False"
+    APP_VECTORSTORE_ENABLEGPUSEARCH: "False"
+    COLLECTION_NAME: "multimodal_data"
+
+    MINIO_ENDPOINT: "rag-minio:9000"
+    MINIO_ACCESSKEY: "minioadmin"
+    MINIO_SECRETKEY: "minioadmin"
+
+    APP_EMBEDDINGS_SERVERURL: "nemoretriever-embedding-ms:8000"
+    APP_EMBEDDINGS_MODELNAME: "nvidia/llama-3.2-nv-embedqa-1b-v2"
+    APP_EMBEDDINGS_DIMENSIONS: "2048"
+
+    APP_NVINGEST_MESSAGECLIENTHOSTNAME: "rag-nv-ingest"
+    APP_NVINGEST_MESSAGECLIENTPORT: "7670"
+
+    # Start simple (no extra GPU-heavy extraction). You can enable later.
+    APP_NVINGEST_PDFEXTRACTMETHOD: "pdfium"
+    APP_NVINGEST_EXTRACTTEXT: "True"
+    APP_NVINGEST_EXTRACTTABLES: "False"
+    APP_NVINGEST_EXTRACTCHARTS: "False"
+    APP_NVINGEST_EXTRACTIMAGES: "False"
+    APP_NVINGEST_EXTRACTINFOGRAPHICS: "False"
+    APP_NVINGEST_TEXTDEPTH: "page"
+
+    # Summary uses same LLM NIM service (small model)
+    SUMMARY_LLM: "meta/llama-3.1-8b-instruct"
+    SUMMARY_LLM_SERVERURL: "nim-llm:8000"
+    SUMMARY_LLM_MAX_CHUNK_LENGTH: "12000"
+    SUMMARY_CHUNK_OVERLAP: "200"
+
+    ENABLE_CITATIONS: "True"
+    LOGLEVEL: "INFO"
+
+    APP_NVINGEST_CHUNKSIZE: "512"
+    APP_NVINGEST_CHUNKOVERLAP: "150"
+    APP_NVINGEST_ENABLEPDFSPLITTER: "True"
+
+    REDIS_HOST: "rag-redis-master"
+    REDIS_PORT: "6379"
+    REDIS_DB: "0"
+
+  persistence:
+    enabled: true
+    storageClass: ""   # use cluster default
+    size: 50Gi
+    mountPath: "/data/"
+
+# -------------------------------------------------------------------
+# Frontend (CPU)
+# -------------------------------------------------------------------
+frontend:
+  enabled: true
+
+# -------------------------------------------------------------------
+# NIM LLM (GPU) — CHANGE IS HERE
+# -------------------------------------------------------------------
+nim-llm:
+  enabled: true
+
+  # Ensure it schedules only on GPU nodes (label NodeType=gpu) and tolerates GPU taint
+  nodeSelector:
+    NodeType: "gpu"
+  tolerations:
+    - key: "nvidia.com/gpu"
+      operator: "Equal"
+      value: "true"
+      effect: "NoSchedule"
+
+  image:
+    repository: nvcr.io/nim/meta/llama-3.1-8b-instruct
+    tag: "latest"
+    pullPolicy: IfNotPresent
+
+  resources:
+    limits:
+      nvidia.com/gpu: 1
+    requests:
+      nvidia.com/gpu: 1
+
+  # IMPORTANT: Set the model profile for your GPU/cluster
+  # You can paste the "Compatible" vllm tp1/pp1 profile you saw from your model template tool.
+  env:
+#    - name: NIM_MODEL_PROFILE
+#      value: "vllm-bf16-tp1-pp1-32c3b968468aefcfb3ea1db5a16e3dc9d64395f02ef68a06175e8bbdb0038601"
+    # Optional memory reduction knobs (work if the NIM honors vLLM-style envs)
+    - name: MAX_MODEL_LEN
+      value: "4096"
+    - name: MAX_NUM_SEQS
+      value: "2"
+    - name: GPU_MEMORY_UTILIZATION
+      value: "0.90"
+
+  model:
+    # Keep consistent with rag-server model strings
+    name: "meta/llama-3.1-8b-instruct"
+    ngcAPIKey: ""
+    hfTokenSecret: ""
+
+# -------------------------------------------------------------------
+# Embedding NIM (GPU)
+# -------------------------------------------------------------------
+nvidia-nim-llama-32-nv-embedqa-1b-v2:
+  enabled: true
+  nodeSelector:
+    NodeType: "gpu"
+  tolerations:
+    - key: "nvidia.com/gpu"
+      operator: "Equal"
+      value: "true"
+      effect: "NoSchedule"
+  resources:
+    limits:
+      nvidia.com/gpu: 1
+    requests:
+      nvidia.com/gpu: 1
+
+# -------------------------------------------------------------------
+# Reranker NIM (GPU)
+# -------------------------------------------------------------------
+nvidia-nim-llama-32-nv-rerankqa-1b-v2:
+  enabled: true
+  nodeSelector:
+    NodeType: "gpu"
+  tolerations:
+    - key: "nvidia.com/gpu"
+      operator: "Equal"
+      value: "true"
+      effect: "NoSchedule"
+  resources:
+    limits:
+      nvidia.com/gpu: 1
+    requests:
+      nvidia.com/gpu: 1
+
+# -------------------------------------------------------------------
+# NV-Ingest (CPU by default) + bundled Milvus + MinIO
+# -------------------------------------------------------------------
+nv-ingest:
+  enabled: true
+
+  # try to stop any "append env" mechanism
+  extraEnv: []
+  env: []
+  envVars: {}
+
+  # Some charts use these names:
+  extraEnvs: []
+  extraEnvironmentVars: {}
+  extraEnvVars: {}
+
+  nodeSelector: {}
+  tolerations: []
+
+
+  # Use the bundled Milvus instance, but keep it CPU so GPUs are reserved for NIM
+  milvusDeployed: true
+  milvus:
+    fullnameOverride: milvus
+
+    image:
+      all:
+        repository: milvusdb/milvus
+        tag: v2.5.17      # CPU tag (avoid -gpu)
+
+    # Ensure etcd extraVolumes type issues never occur
+#    etcd:
+#      extraVolumes: {}
+#      extraVolumeMounts: {}
+
+    # Make sure Milvus does NOT request GPU
+    standalone:
+      resources:
+        limits:
+          nvidia.com/gpu: 0
+        requests:
+          nvidia.com/gpu: 0
+
+    minio:
+      image:
+        repository: minio/minio
+        tag: "RELEASE.2025-09-07T16-13-09Z"
+      accessKey: minioadmin
+      secretKey: minioadmin
+      bucketName: nv-ingest
+
+  # Disable NV-Ingest GPU-heavy sub-NIMs initially (turn on only if you need them)
+  paddleocr-nim:
+    deployed: true
+  nemoretriever-graphic-elements-v1:
+    deployed: true
+  nemoretriever-page-elements-v2:
+    deployed: true
+  nemoretriever-table-structure-v1:
+    deployed: true
+  nim-vlm-text-extraction:
+    deployed: true

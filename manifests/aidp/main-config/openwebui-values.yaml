@@ -1,0 +1,54 @@
+# -----------------------------------------------------------------------------
+# Open WebUI - values.yaml
+# -----------------------------------------------------------------------------
+
+# ------------------------------------------------------------------
+# Persistence - This prevents the "InvalidToken" errors on restart
+# ------------------------------------------------------------------
+persistence:
+  enabled: true
+  existingClaim: "" # Leave empty to let the chart create one, or specify an existing PVC name
+  accessModes:
+    - ReadWriteOnce
+  size: 2Gi
+  # storageClass: "gp2" # Uncomment and set to your cluster's storage class (e.g., standard, longhorn, etc.)
+
+# ------------------------------------------------------------------
+# Force internal DNS resolution to Envoy
+# ------------------------------------------------------------------
+hostAliases:
+  - ip: "10.100.168.98"
+    hostnames:
+      - "keycloak.example.com"
+      - "ai.example.com"
+
+# ------------------------------------------------------------------
+# Base Environment
+# ------------------------------------------------------------------
+extraEnvVars:
+  - name: WEBUI_URL
+    value: "http://ragui.example.com"
+  - name: ENABLE_FORWARD_USER_INFO_HEADERS
+    value: "true"
+  # Hardcoding this prevents session invalidation when the pod restarts
+  - name: WEBUI_SECRET_KEY
+    value: "JkqV|BrK,t;RM{${"
+  # This helps Open WebUI trust the Envoy headers for user IPs
+  - name: FORWARDED_ALLOW_IPS
+    value: "*"
+
+# ------------------------------------------------------------------
+# SSO / OIDC (Keycloak)
+# ------------------------------------------------------------------
+sso:
+  enabled: true
+  enableSignup: true
+  enableRoleManagement: false
+
+  oidc:
+    enabled: true
+    providerName: "Keycloak"
+    providerUrl: "http://keycloak.example.com/auth/realms/rag-gateway/.well-known/openid-configuration"
+    clientId: "openwebui"
+    clientSecret: "Qk8RLd9hJn3dAE5Mo5Y9mlv73WYIKlKl"
+    scopes: "openid email profile rag-claims"

@@ -1,0 +1,19 @@
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: SecurityPolicy
+metadata:
+  name: openwebui-rag-bridge-cors-policy
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: openwebui-rag-bridge-route
+  cors:
+    allowOrigins:
+      - "https://ai.example.com"
+    allowMethods:
+      - POST
+      - GET
+      - OPTIONS
+    allowHeaders:
+      - "Content-Type"
+      - "X-Tool-API-Key"

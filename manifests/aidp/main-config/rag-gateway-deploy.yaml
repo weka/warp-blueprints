@@ -1,0 +1,174 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rag-gateway
+  namespace: rag
+  labels:
+    app: rag-gateway
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: rag-gateway
+  template:
+    metadata:
+      labels:
+        app: rag-gateway
+    spec:
+      # Force in-cluster resolution of keycloak.example.com -> Envoy ClusterIP
+      hostAliases:
+        - ip: "10.100.168.98"   # Envoy LB ClusterIP inside cluster
+          hostnames:
+            - "keycloak.example.com"
+
+      containers:
+        - name: rag-gateway
+          image: wekachrisjen/rag-gateway:v0.33
+          imagePullPolicy: IfNotPresent
+
+          ports:
+            - name: http
+              containerPort: 8000
+
+          env:
+            # -------------------------------
+            # OIDC / Keycloak
+            # -------------------------------
+            # IMPORTANT: issuer must match Keycloak .well-known "issuer"
+            - name: OIDC_ISSUER
+              value: "http://keycloak.example.com/auth/realms/rag-gateway"
+
+            # IMPORTANT: JWKS should also be the same host, same scheme, no :8080
+            # (rag-gateway will fetch it using hostAliases -> Envoy -> Keycloak)
+            - name: OIDC_JWKS_URL
+              value: "http://keycloak.example.com/auth/realms/rag-gateway/protocol/openid-connect/certs"
+
+            - name: OIDC_AUDIENCE
+              value: "rag-gateway-1"
+
+            # Needed for Haystack OpenAI-compatible clients even when using NIM
+            - name: OPENAI_API_KEY
+              value: "dummy"
+
+            - name: APP_NAME
+              value: "rag-gateway"
+
+            # -------------------------------
+            # Milvus
+            # -------------------------------
+            - name: MILVUS_URI
+              value: "http://milvus.rag.svc.cluster.local:19530"
+            - name: MILVUS_COLLECTION
+              value: "multimodal_data"
+            - name: MILVUS_VECTOR_FIELD
+              value: "vector"
+            - name: MILVUS_TEXT_FIELD
+              value: "text"
+            - name: MILVUS_METADATA_JSON_FIELD
+              value: "content_metadata"
+
+            # -------------------------------
+            # Retrieval controls
+            # -------------------------------
+            - name: TOP_K_RETRIEVAL
+              value: "40"
+            - name: TOP_K_RERANK
+              value: "20"
+            - name: "LLM_TEMPERATURE"
+              value: "0.2"
+
+            # -------------------------------
+            # NVIDIA Embedding NIM (OpenAI-compatible)
+            # -------------------------------
+            - name: EMBEDDING_API_BASE
+              value: "http://nemoretriever-embedding-ms.rag.svc.cluster.local:8000/v1"
+            - name: EMBEDDING_MODEL
+              value: "nvidia/llama-3.2-nv-embedqa-1b-v2"
+
+            # -------------------------------
+            # NVIDIA ReRanker NIM (OpenAI-compatible)
+            # -------------------------------
+            - name: RERANK_API_BASE
+              value: "http://nemoretriever-ranking-ms.rag.svc.cluster.local:8000/v1"
+            - name: RERANK_MODEL
+              value: "nvidia/llama-3.2-nv-rerankqa-1b-v2"
+
+            # -------------------------------
+            # NVIDIA LLM NIM (OpenAI-compatible)
+            # -------------------------------
+            - name: LLM_API_BASE
+              value: "http://nim-llm.rag.svc.cluster.local:8000/v1"
+            - name: LLM_MODEL
+              value: "meta/llama-3.1-8b-instruct"
+            - name: TEMPERATURE
+              value: "0.2"
+            - name: MAX_NEW_TOKENS
+              value: "512"
+
+            # -------------------------------
+            # RAG Gateway auth debugging
+            # -------------------------------
+            - name: AUTH_DEBUG
+              value: "true"
+            - name: TOOL_API_KEY
+              value: "SecureRAGLibrarian2026TestKey"
+
+            # Interim fixed ACL identity (so Milvus filtering still works)
+            - name: TOOL_FALLBACK_UID
+              value: "1000"
+            - name: TOOL_FALLBACK_GIDS
+              value: "1000"
+
+            - name: HEADER_UID
+              value: "x-user-uid"
+            - name: HEADER_GIDS
+              value: "x-user-gids"
+            #------------------------------------
+            # REDIS Queue for Space Manager
+            #------------------------------------
+            - name: REDIS_ADDRESS
+              value: "redis-master.redis.svc.cluster.local:6379"
+
+
+#          readinessProbe:
+#            httpGet:
+#              path: /healthz
+#              port: http
+#            initialDelaySeconds: 3
+#            periodSeconds: 10
+#            timeoutSeconds: 2
+#            failureThreshold: 6
+#
+#          livenessProbe:
+#            httpGet:
+#              path: /healthz
+#              port: http
+#            initialDelaySeconds: 10
+#            periodSeconds: 20
+#            timeoutSeconds: 2
+#            failureThreshold: 6
+
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "512Mi"
+            limits:
+              cpu: "1"
+              memory: "2Gi"
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rag-gateway
+  namespace: rag
+  labels:
+    app: rag-gateway
+spec:
+  selector:
+    app: rag-gateway
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8000
+  type: ClusterIP

@@ -1,0 +1,23 @@
+Install standard PostGre
+kubectl apply -f postgres.yaml
+
+Install Keycloak Realm ConfigMap
+
+
+Install Keycloak (Helm v3 otherwise it has duplicate errors)
+helm upgrade --install keycloak codecentric/keycloakx -n rag -f values.yaml
+
+ Apply Envoy Route
+kubectl apply -f keycloak-route.yaml
+
+
+
+Note: For Keycloak to run in HTTP here are the hacks used
+
+/opt/keycloak/bin/kcadm.sh config credentials \
+  --server http://localhost:8080/auth \
+  --realm master \
+  --user admin \
+  --password Password123
+
+  /opt/keycloak/bin/kcadm.sh update realms/master -s sslRequired=NONE

@@ -1,0 +1,29 @@
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: keycloak
+  namespace: rag
+spec:
+  parentRefs:
+    - name: warp-edge-gateway
+      namespace: envoy-gateway-system
+  hostnames:
+    - keycloak.example.com
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      filters:
+        - type: RequestHeaderModifier
+          requestHeaderModifier:
+            set:
+              - name: X-Forwarded-Proto
+                value: http
+              - name: X-Forwarded-Host
+                value: keycloak.example.com
+              - name: X-Forwarded-Port
+                value: "80"
+      backendRefs:
+        - name: keycloak-keycloakx-http
+          port: 8080

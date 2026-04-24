@@ -1,0 +1,25 @@
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: openwebui-rag-bridge-route
+  namespace: rag
+spec:
+  parentRefs:
+    - name: warp-edge-gateway
+      namespace: envoy-gateway-system
+  hostnames:
+    - "ai.example.com"
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /bridge
+      filters:
+        - type: URLRewrite
+          urlRewrite:
+            path:
+              type: ReplacePrefixMatch
+              replacePrefixMatch: /
+      backendRefs:
+        - name: openwebui-rag-bridge
+          port: 80
