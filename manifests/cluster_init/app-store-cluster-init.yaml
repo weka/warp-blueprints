@@ -69,7 +69,6 @@ spec:
         description: "NVIDIA NIM Operator — reconciles NIMCache/NIMService CRs"
         enabled: true
         dependsOn:
-          - nvidia-operator
         helmChart:
           repository: "https://helm.ngc.nvidia.com/nvidia"
           name: "k8s-nim-operator"
