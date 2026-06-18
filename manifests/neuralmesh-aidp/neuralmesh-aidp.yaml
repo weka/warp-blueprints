@@ -96,7 +96,7 @@ apiVersion: warp.io/v1alpha1
 kind: WekaAppStore
 metadata:
   name: weka-aidp
-  namespace: [[ namespace ]]
+  namespace: "[[ namespace ]]"
 spec:
   appStack:
     # Operator-layer variables. The App Store operator substitutes ${name}
@@ -1145,9 +1145,9 @@ spec:
               # to enumerate them. Port 9000 is the standard WEKA S3 port.
               upstream weka_s3 {
                  least_conn;
-{%- for ip in weka_s3_node_ips.replace(',', ' ').split() %}
+              {%- for ip in weka_s3_node_ips.replace(',', ' ').split() %}
               server [[ ip ]]:9000;
-{%- endfor %}
+              {%- endfor %}
               }
               server {
                  listen       9000;
@@ -1506,7 +1506,7 @@ spec:
                       - /bin/bash
                       - -c
                       - |
-{%- raw %}
+                        {%- raw %}
                         set -euo pipefail
                         echo "Copying NGC docker pull secret from wekaappstore/${NGC_DOCKER_SECRET}..."
                         DCJ=$(kubectl get secret "${NGC_DOCKER_SECRET}" -n wekaappstore -o jsonpath='{.data.\.dockerconfigjson}')
@@ -1551,7 +1551,7 @@ spec:
                           NGC_CLI_API_KEY: "${NGC_KEY}"
                         EOF
                         echo "Materialized ngc-secret and ngc-api in ${NS}."
-{% endraw %}
+                        {% endraw %}
         readinessCheck:
           type: job
           name: ngc-secret-materialize
@@ -1650,7 +1650,7 @@ spec:
                       - /bin/bash
                       - -c
                       - |
-{%- raw %}
+                        {%- raw %}
                         set -euo pipefail
                         echo "Reading WEKA API token from wekaappstore/${WEKA_TOKEN_SECRET}..."
                         # .data is already base64 — copy base64->base64 into the target.
@@ -1663,7 +1663,7 @@ spec:
                         kubectl -n "${NS}" patch secret aidp-gui-operator-secrets --type='json' \
                           -p="[{\"op\":\"replace\",\"path\":\"/data/WATCHER_WEKA_TOKEN\",\"value\":\"${TOKEN_B64}\"}]"
                         echo "Patched aidp-gui-operator-secrets.WATCHER_WEKA_TOKEN from the WEKA credential."
-{% endraw %}
+                        {% endraw %}
         readinessCheck:
           type: job
           name: weka-token-sync
@@ -1969,7 +1969,7 @@ spec:
                       - /bin/bash
                       - -c
                       - |
-{%- raw %}
+                        {%- raw %}
                         set -euo pipefail
                         echo "Discovering Envoy Gateway ClusterIP..."
 
@@ -2008,7 +2008,7 @@ spec:
                         EOF
 
                         echo "Wrote envoy-endpoints ConfigMap (ip=${ENVOY_IP})."
-{% endraw %}
+                        {% endraw %}
         readinessCheck:
           type: job
           name: envoy-endpoint-discovery
@@ -2208,7 +2208,7 @@ spec:
                       - /bin/bash
                       - -c
                       - |
-{%- raw %}
+                        {%- raw %}
                         set -euo pipefail
                         # codecentric/keycloakx names the main Service "<fullname>-http"
                         # (see chart's templates/service.yaml). With fullnameOverride: keycloak
@@ -2481,7 +2481,7 @@ spec:
                           "${AIDP_BASE_URL}"
 
                         echo "Keycloak post-install config complete."
-{% endraw %}
+                        {% endraw %}
         readinessCheck:
           type: job
           name: keycloak-secret-sync
@@ -2814,7 +2814,7 @@ spec:
                       - /bin/bash
                       - -c
                       - |
-{%- raw %}
+                        {%- raw %}
                         set -euo pipefail
 
                         echo "Applying EnvoyProxy, Gateway, HTTPRoute..."
@@ -2915,7 +2915,7 @@ spec:
                           externalName: ${ENVOY_SVC}.envoy-gateway-system.svc.cluster.local
                         EOF
                         echo "Created ExternalName Service embedding-proxy -> ${ENVOY_SVC}.envoy-gateway-system.svc.cluster.local"
-{% endraw %}
+                        {% endraw %}
         readinessCheck:
           type: job
           name: embedding-gateway-setup

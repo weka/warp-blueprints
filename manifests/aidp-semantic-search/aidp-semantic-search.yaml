@@ -44,7 +44,7 @@ apiVersion: warp.io/v1alpha1
 kind: WekaAppStore
 metadata:
   name: weka-openwebui
-  namespace: [[ namespace ]]
+  namespace: "[[ namespace ]]"
 spec:
   appStack:
     # This add-on has no envsubst template variables (no $ngcApiKey-style
@@ -151,7 +151,7 @@ spec:
                       - /bin/bash
                       - -c
                       - |
-{%- raw %}
+                        {%- raw %}
                         set -euo pipefail
                         kubectl get secret open-webui-secrets -n "$NS" >/dev/null 2>&1 \
                           && echo "open-webui-secrets already exists, skipping." && exit 0
@@ -162,7 +162,7 @@ spec:
                           --from-literal=WEBUI_ADMIN_PASSWORD='<replace-me>' \
                           -n "$NS"
                         echo "open-webui-secrets created."
-{% endraw %}
+                        {% endraw %}
         readinessCheck:
           type: job
           name: openwebui-bootstrap-secrets
@@ -266,7 +266,7 @@ spec:
                       - /bin/bash
                       - -c
                       - |
-{%- raw %}
+                        {%- raw %}
                         set -euo pipefail
                         echo "Deriving Open WebUI config from AIDP ConfigMaps..."
 
@@ -406,7 +406,7 @@ spec:
                         EOF
 
                         echo "Wrote openwebui-derived-config ConfigMap."
-{% endraw %}
+                        {% endraw %}
         readinessCheck:
           type: job
           name: openwebui-config-derive
@@ -507,7 +507,7 @@ spec:
                       - /bin/bash
                       - -c
                       - |
-{%- raw %}
+                        {%- raw %}
                         set -euo pipefail
                         # codecentric/keycloakx fullnameOverride: keycloak produces Service "keycloak-http"
                         KC_HOST="http://keycloak-http.$NS.svc.cluster.local"
@@ -750,7 +750,7 @@ spec:
                         fi
 
                         echo "openwebui-keycloak-client complete."
-{% endraw %}
+                        {% endraw %}
         readinessCheck:
           type: job
           name: openwebui-keycloak-client
@@ -939,7 +939,7 @@ spec:
                       - /bin/bash
                       - -c
                       - |
-{%- raw %}
+                        {%- raw %}
                         set -euo pipefail
 
                         # Derive hostname from openwebui.baseUrl:
@@ -990,7 +990,7 @@ spec:
                           exit 1
                         fi
                         echo "HTTPRoute open-webui-route applied; Gateway Programmed=True."
-{% endraw %}
+                        {% endraw %}
         readinessCheck:
           type: job
           name: openwebui-httproute
@@ -1086,7 +1086,7 @@ spec:
                       - /bin/bash
                       - -c
                       - |
-{%- raw %}
+                        {%- raw %}
                         set -euo pipefail
 
                         OWUI_BASE="http://open-webui.$NS.svc.cluster.local:8080"
@@ -1255,7 +1255,7 @@ spec:
                         create_assistant_model
 
                         echo "Tool aidp_rag_bridge setup complete."
-{% endraw %}
+                        {% endraw %}
         readinessCheck:
           type: job
           name: openwebui-tool-register
