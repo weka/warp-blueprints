@@ -23,6 +23,20 @@ x-variables:
     placeholder: "e.g. https://openwebui.example.com"
 
 # =============================================================================
+# Cluster compatibility requirements (read by the WEKA App Store GUI)
+# =============================================================================
+# This add-on reuses the AIDP cluster's nim-llm for inference, so it requests
+# NO GPUs of its own. Open WebUI itself is a lightweight web app; cpu/memory
+# are conservative recommended minimums for the UI plus its setup jobs.
+x-requirements:
+  cpu:
+    cores: 2
+  memory:
+    gib: 4
+  gpu:
+    count: 0
+
+# =============================================================================
 # Open WebUI Add-on AppStack
 # =============================================================================
 # What: WekaAppStore CR that deploys Open WebUI as an add-on to an already-

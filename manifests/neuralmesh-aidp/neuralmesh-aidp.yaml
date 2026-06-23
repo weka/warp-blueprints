@@ -74,6 +74,25 @@ x-variables:
     placeholder: "e.g. vectordb"
 
 # =============================================================================
+# Cluster compatibility requirements (read by the WEKA App Store GUI)
+# =============================================================================
+# Drives the "Cluster Compatibility" panel on the blueprint page. The GUI
+# compares these against the cluster's currently-free capacity.
+#   - gpu: authoritative — the NVIDIA RAG GPU profile below is sized for
+#     3 nodes x 4x RTX PRO 6000 SE (96 GB each) = 12 GPUs.
+#   - cpu/memory: recommended cluster minimums. The exact per-pod requests
+#     live inside the NVIDIA NIM Helm charts (not visible to the GUI), so these
+#     are conservative aggregate floors for the full AIDP stack.
+x-requirements:
+  cpu:
+    cores: 32
+  memory:
+    gib: 128
+  gpu:
+    count: 12
+    model: "RTX PRO 6000 SE"
+
+# =============================================================================
 # WEKA AIDP AppStack Blueprint
 # =============================================================================
 # What: WekaAppStore CR that orchestrates the complete AIDP platform deployment
