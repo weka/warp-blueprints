@@ -45,6 +45,7 @@ x-variables:
   weka_api_host:
     type: string
     required: true
+    validate: false  # bare host/IP (e.g. 172.3.4.248), not a URL — skip URL format validation
     description: "WEKA cluster management IP/host for the REST API. Space Manager and the operator derive all WEKA API URLs from this (port 14000 is assumed)."
     placeholder: "e.g. 172.3.4.248"
   keycloak_fqdn:
