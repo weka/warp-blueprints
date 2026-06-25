@@ -51,7 +51,8 @@ x-variables:
   keycloak_fqdn:
     type: string
     required: true
-    description: "External Keycloak FQDN used for browser OIDC login."
+    format: hostname
+    description: "External Keycloak hostname for browser OIDC login. Hostname only — do NOT include http:// or https:// or a path. The scheme is set by the blueprint; this value is also used as a Kubernetes hostAlias, which must be a bare hostname."
     placeholder: "e.g. keycloak.example.com"
   gui_base_url:
     type: string
@@ -61,12 +62,14 @@ x-variables:
   attu_hostname:
     type: string
     required: true
-    description: "External FQDN for the Milvus Attu admin UI (exposed via the Envoy HTTPRoute)."
+    format: hostname
+    description: "External FQDN for the Milvus Attu admin UI (exposed via the Envoy HTTPRoute). Hostname only — no http:// or path."
     placeholder: "e.g. attu.example.com"
   cluster_fqdn:
     type: string
     required: true
-    description: "Cluster domain used to derive the Phoenix observability hostname (phoenix.<domain>)."
+    format: hostname
+    description: "Cluster domain used to derive the Phoenix observability hostname (phoenix.<domain>). Domain/hostname only — no http:// or path."
     placeholder: "e.g. example.com"
   vectordb_filesystem_name:
     type: string
