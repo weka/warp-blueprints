@@ -125,7 +125,7 @@ spec:
         waitForReady: true
         readinessCheck:
           type: deployment
-          name: csi-wekafs-csi-wekafsplugin-controller
+          name: csi-wekafs-controller
           namespace: csi-wekafs
           timeout: 300
         targetNamespace: csi-wekafs
