@@ -101,7 +101,7 @@ spec:
         waitForReady: true
         readinessCheck:
           type: deployment
-          name: weka-operator
+          name: weka-operator-controller-manager
           namespace: weka-operator-system
           timeout: 300
         targetNamespace: weka-operator-system
