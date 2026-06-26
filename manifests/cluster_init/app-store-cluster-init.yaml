@@ -6,6 +6,71 @@ metadata:
 spec:
   appStack:
     components:
+      - name: cadvisor-containerd-sock-fix
+        description: "DaemonSet that symlinks /run/spectro/containerd/containerd.sock to the standard path so cAdvisor can resolve container metadata. Required because Palette runs containerd at a non-standard path and cAdvisor falls back to /run/containerd/containerd.sock for metadata lookups."
+        enabled: true
+        dependsOn: []
+        kubernetesManifest: |
+          apiVersion: apps/v1
+          kind: DaemonSet
+          metadata:
+            name: cadvisor-containerd-fix
+            namespace: kube-system
+            labels:
+              app: cadvisor-containerd-fix
+          spec:
+            selector:
+              matchLabels:
+                app: cadvisor-containerd-fix
+            updateStrategy:
+              type: RollingUpdate
+            template:
+              metadata:
+                labels:
+                  app: cadvisor-containerd-fix
+              spec:
+                tolerations:
+                - operator: Exists
+                priorityClassName: system-node-critical
+                hostPID: true
+                initContainers:
+                - name: fix-containerd-sock
+                  image: alpine:3.18
+                  securityContext:
+                    privileged: true
+                  command:
+                  - /bin/sh
+                  - -c
+                  - |
+                    if [ ! -S /host/run/spectro/containerd/containerd.sock ]; then
+                      echo "Not a Spectro Cloud node (socket not found at /run/spectro/containerd/containerd.sock). Skipping."
+                      exit 0
+                    fi
+                    mkdir -p /host/run/containerd
+                    ln -sf /run/spectro/containerd/containerd.sock /host/run/containerd/containerd.sock
+                    echo "Symlink: $(ls -la /host/run/containerd/containerd.sock)"
+                    mkdir -p /host/etc/systemd/system/multi-user.target.wants
+                    printf '[Unit]\nDescription=Symlink Spectro containerd socket for cAdvisor\nBefore=kubelet.service\nAfter=local-fs.target\n\n[Service]\nType=oneshot\nExecStart=/bin/bash -c "mkdir -p /run/containerd && ln -sf /run/spectro/containerd/containerd.sock /run/containerd/containerd.sock"\nRemainAfterExit=yes\n\n[Install]\nWantedBy=multi-user.target\n' > /host/etc/systemd/system/containerd-sock-symlink.service
+                    ln -sf /etc/systemd/system/containerd-sock-symlink.service \
+                      /host/etc/systemd/system/multi-user.target.wants/containerd-sock-symlink.service
+                    echo "Systemd service written and enabled"
+                  volumeMounts:
+                  - name: host-run
+                    mountPath: /host/run
+                  - name: host-etc
+                    mountPath: /host/etc
+                containers:
+                - name: pause
+                  image: registry.k8s.io/pause:3.9
+                volumes:
+                - name: host-run
+                  hostPath:
+                    path: /run
+                - name: host-etc
+                  hostPath:
+                    path: /etc
+        targetNamespace: kube-system
+
       - name: kube-prom-stack
         description: "Prometheus and Grafana monitoring stack"
         enabled: true
@@ -62,27 +127,6 @@ spec:
           timeout: 300
         targetNamespace: gpu-operator
 
-      # NVIDIA NIM Operator — reconciles NIMCache/NIMService CRs into NIM pods.
-      # Required before the NVIDIA RAG Blueprint (in weka-aidp) is installed;
-      # the blueprint ships NIMCache/NIMService CRs but not their controller.
-      - name: nim-operator
-        description: "NVIDIA NIM Operator — reconciles NIMCache/NIMService CRs"
-        enabled: true
-        dependsOn:
-        helmChart:
-          repository: "https://helm.ngc.nvidia.com/nvidia"
-          name: "k8s-nim-operator"
-          version: "3.1.0"
-          releaseName: "nim-operator"
-          crdsStrategy: Auto
-        waitForReady: true
-        readinessCheck:
-          type: pod
-          selector: "app.kubernetes.io/name=k8s-nim-operator"
-          namespace: nim-operator
-          timeout: 300
-        targetNamespace: nim-operator
-
         # Service Account for CRD installer Checker
       - name: gateway-api-crds-serviceaccount
         description: "Service Account for CRD installer Checker"
@@ -124,6 +168,8 @@ spec:
         waitForReady: true
         readinessCheck:
           type: job
+          name: install-gateway-api-crds
+          namespace: kube-system
           timeout: 300
         kubernetesManifest: |
           apiVersion: batch/v1
@@ -297,14 +343,14 @@ spec:
                   - name: wekaappstoregui-svc
                     port: 80
         targetNamespace: wekaappstore
-
+      
       # Install NVIDIA DCGM ServiceMonitor via operator manifests
       - name: nvidia-dcgm-servicemonitor
         description: "ServiceMonitor for NVIDIA DCGM exporter"
-        enabled: true
+        enabled: false
         dependsOn:
           - kube-prom-stack        # ensure Prometheus Operator (CRDs) is ready
-          #- nvidia-operator        # ensure DCGM exporter Service exists
+          - nvidia-operator        # ensure DCGM exporter Service exists
           - prometheus-adapter
           - envoy-ingress-controller
         kubernetesManifest: |
@@ -338,23 +384,46 @@ data:
   prom-stack_values.yaml: |
     ## Create default rules for monitoring the cluster
     #
-    # Disable `etcd` and `kubeScheduler` rules (managed by DOKS, so metrics are not accessible)
+    # Disable rules for components whose metrics endpoints are not reachable:
+    # - etcd/kubeScheduler: managed control-plane components, metrics not exposed
+    # - kubeProxy/kubeControllerManager: bind to 127.0.0.1 by default; Prometheus
+    #   can't scrape them via node IP (connection refused on 10249/10257)
     defaultRules:
       create: true
       rules:
         etcd: false
         kubeScheduler: false
+        kubeProxy: false
+        kubeControllerManager: false
 
     ## Component scraping kube scheduler
     ##
-    # Disabled because it's being managed by DOKS, so it's not accessible
+    # Disabled — metrics endpoint not reachable
     kubeScheduler:
       enabled: false
 
     ## Component scraping etcd
     ##
-    # Disabled because it's being managed by DOKS, so it's not accessible
+    # Disabled — metrics endpoint not reachable
     kubeEtcd:
+      enabled: false
+
+    ## Component scraping kube-controller-manager
+    ##
+    # Disabled — kube-controller-manager binds metrics to 127.0.0.1:10257 by
+    # default; Prometheus cannot reach it via the node IP (connection refused).
+    # To re-enable: add --bind-address=0.0.0.0 to the kube-controller-manager
+    # static pod manifest on each control plane node and set enabled: true here.
+    kubeControllerManager:
+      enabled: false
+
+    ## Component scraping kube-proxy
+    ##
+    # Disabled — kube-proxy binds metrics to 127.0.0.1:10249 by default;
+    # Prometheus cannot reach it via the node IP (connection refused).
+    # To re-enable: patch kube-proxy ConfigMap (metricsBindAddress: 0.0.0.0:10249),
+    # restart kube-proxy DaemonSet, then set enabled: true here.
+    kubeProxy:
       enabled: false
 
     alertmanager:
@@ -384,6 +453,9 @@ data:
       enabled: true
       adminPassword: prom-operator # Please change the default password in production !!!
       # persistence / affinity omitted for brevity
+      sidecar:
+        datasources:
+          searchNamespace: ALL
 
     ## Manages Prometheus and Alertmanager components
     ##
@@ -399,8 +471,15 @@ data:
       enabled: true
       serviceMonitor:
         enabled: true
-        # Enable cAdvisor metrics if your chart supports this flag
-        # cAdvisor: true
+        # cAdvisor provides per-container CPU, memory, and network metrics.
+        # Required for most Grafana dashboards ("Kubernetes / Compute Resources" etc).
+        cAdvisor: true
+        # On-prem kubeadm clusters use self-signed kubelet TLS certs.
+        # Both flags are required: insecureSkipVerify covers the main kubelet
+        # endpoint (/metrics), cAdvisorInsecureSkipVerify covers the cAdvisor
+        # endpoint (/metrics/cadvisor) — they are scraped separately.
+        insecureSkipVerify: true
+        cAdvisorInsecureSkipVerify: true
 
     ## Deploy a Prometheus instance
     ##
@@ -409,6 +488,11 @@ data:
 
       ## IMPORTANT: enable cluster-wide monitoring
       prometheusSpec:
+        # Stamp a cluster label on all metrics so Kubernetes dashboard
+        # $cluster variables resolve and dashboard queries return data.
+        externalLabels:
+          cluster: weka-aidp
+
         # Allow Prometheus to discover ServiceMonitors/PodMonitors in ALL namespaces
         serviceMonitorNamespaceSelector: {}
         podMonitorNamespaceSelector: {}
