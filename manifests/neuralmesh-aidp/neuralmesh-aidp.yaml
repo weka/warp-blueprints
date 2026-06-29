@@ -1430,11 +1430,11 @@ spec:
       - name: aidp-bootstrap-ngc-secrets
         enabled: true
         dependsOn: [aidp-bootstrap-secrets]
-        description: "Materialize ngc-secret (dockerconfigjson) and ngc-api (3-alias Opaque) in the rag namespace from the App Store nvidia-ngc credential's derived secrets in wekaappstore."
+        description: "Materialize ngc-secret (dockerconfigjson) and ngc-api (3-alias Opaque) in the rag namespace from the App Store nvidia-ngc credential's derived secrets in the App Store namespace."
         kubernetesManifest: |
           # Sources the NGC key material from the WEKA App Store credential the
           # operator selected on the install form. The credential's derived
-          # secrets live in the wekaappstore namespace:
+          # secrets live in the App Store namespace (${appStoreNamespace}):
           #   warp-<ngc_credential>-docker  (kubernetes.io/dockerconfigjson, nvcr.io)
           #   warp-<ngc_credential>-apikey  (Opaque, key NGC_API_KEY)
           # This Job copies the docker pull secret into rag as `ngc-secret` and
@@ -1477,13 +1477,13 @@ spec:
             kind: Role
             name: ngc-secret-materialize
           ---
-          # wekaappstore-namespace Role: read ONLY the two derived secrets for
-          # the selected credential. Created in wekaappstore; bound to the rag SA.
+          # App Store namespace Role: read ONLY the two derived secrets for
+          # the selected credential. Created in ${appStoreNamespace}; bound to the rag SA.
           apiVersion: rbac.authorization.k8s.io/v1
           kind: Role
           metadata:
             name: ngc-secret-materialize-read
-            namespace: wekaappstore
+            namespace: ${appStoreNamespace}
           rules:
             - apiGroups: [""]
               resources: ["secrets"]
@@ -1494,7 +1494,7 @@ spec:
           kind: RoleBinding
           metadata:
             name: ngc-secret-materialize-read
-            namespace: wekaappstore
+            namespace: ${appStoreNamespace}
           subjects:
             - kind: ServiceAccount
               name: ngc-secret-materialize
@@ -1539,10 +1539,10 @@ spec:
                       - |
                         {%- raw %}
                         set -euo pipefail
-                        echo "Copying NGC docker pull secret from wekaappstore/${NGC_DOCKER_SECRET}..."
-                        DCJ=$(kubectl get secret "${NGC_DOCKER_SECRET}" -n wekaappstore -o jsonpath='{.data.\.dockerconfigjson}')
+                        echo "Copying NGC docker pull secret from ${appStoreNamespace}/${NGC_DOCKER_SECRET}..."
+                        DCJ=$(kubectl get secret "${NGC_DOCKER_SECRET}" -n ${appStoreNamespace} -o jsonpath='{.data.\.dockerconfigjson}')
                         if [[ -z "${DCJ}" ]]; then
-                          echo "ERROR: ${NGC_DOCKER_SECRET} not found / empty in wekaappstore." >&2
+                          echo "ERROR: ${NGC_DOCKER_SECRET} not found / empty in ${appStoreNamespace}." >&2
                           echo "Hint: register an NVIDIA NGC credential on the Settings page and wait for it to sync." >&2
                           exit 1
                         fi
@@ -1560,8 +1560,8 @@ spec:
                           .dockerconfigjson: "${DCJ}"
                         EOF
 
-                        echo "Reading NGC API key from wekaappstore/${NGC_APIKEY_SECRET}..."
-                        NGC_KEY=$(kubectl get secret "${NGC_APIKEY_SECRET}" -n wekaappstore -o jsonpath='{.data.NGC_API_KEY}' | base64 -d)
+                        echo "Reading NGC API key from ${appStoreNamespace}/${NGC_APIKEY_SECRET}..."
+                        NGC_KEY=$(kubectl get secret "${NGC_APIKEY_SECRET}" -n ${appStoreNamespace} -o jsonpath='{.data.NGC_API_KEY}' | base64 -d)
                         if [[ -z "${NGC_KEY}" ]]; then
                           echo "ERROR: NGC_API_KEY missing in ${NGC_APIKEY_SECRET}." >&2
                           exit 1
@@ -1591,11 +1591,11 @@ spec:
       - name: aidp-bootstrap-weka-token
         enabled: true
         dependsOn: [aidp-bootstrap-secrets]
-        description: "Patch aidp-gui-operator-secrets.WATCHER_WEKA_TOKEN from the App Store weka-storage credential's derived secret (wekaappstore/warp-<weka_credential>-token)."
+        description: "Patch aidp-gui-operator-secrets.WATCHER_WEKA_TOKEN from the App Store weka-storage credential's derived secret in the App Store namespace."
         kubernetesManifest: |
           # The WEKA App Store weka-storage credential produces a derived secret
           #   warp-<weka_credential>-token  (Opaque: WEKA_API_USERNAME, WEKA_API_TOKEN, WEKA_API_ENDPOINT)
-          # in the wekaappstore namespace. The AIDP operator (Kopf) reads the WEKA
+          # in the App Store namespace (${appStoreNamespace}). The AIDP operator (Kopf) reads the WEKA
           # REST API JWT from aidp-gui-operator-secrets.WATCHER_WEKA_TOKEN in rag,
           # so this Job copies the credential's WEKA_API_TOKEN into that key.
           apiVersion: v1
@@ -1629,12 +1629,12 @@ spec:
             kind: Role
             name: weka-token-sync
           ---
-          # Read-only access to the single derived weka-storage secret in wekaappstore.
+          # Read-only access to the single derived weka-storage secret in the App Store namespace.
           apiVersion: rbac.authorization.k8s.io/v1
           kind: Role
           metadata:
             name: weka-token-sync-read
-            namespace: wekaappstore
+            namespace: ${appStoreNamespace}
           rules:
             - apiGroups: [""]
               resources: ["secrets"]
@@ -1645,7 +1645,7 @@ spec:
           kind: RoleBinding
           metadata:
             name: weka-token-sync-read
-            namespace: wekaappstore
+            namespace: ${appStoreNamespace}
           subjects:
             - kind: ServiceAccount
               name: weka-token-sync
@@ -1683,9 +1683,9 @@ spec:
                       - |
                         {%- raw %}
                         set -euo pipefail
-                        echo "Reading WEKA API token from wekaappstore/${WEKA_TOKEN_SECRET}..."
+                        echo "Reading WEKA API token from ${appStoreNamespace}/${WEKA_TOKEN_SECRET}..."
                         # .data is already base64 — copy base64->base64 into the target.
-                        TOKEN_B64=$(kubectl get secret "${WEKA_TOKEN_SECRET}" -n wekaappstore -o jsonpath='{.data.WEKA_API_TOKEN}')
+                        TOKEN_B64=$(kubectl get secret "${WEKA_TOKEN_SECRET}" -n ${appStoreNamespace} -o jsonpath='{.data.WEKA_API_TOKEN}')
                         if [[ -z "${TOKEN_B64}" ]]; then
                           echo "ERROR: WEKA_API_TOKEN missing in ${WEKA_TOKEN_SECRET}." >&2
                           echo "Hint: register a WEKA storage credential on the Settings page and wait for it to sync." >&2
