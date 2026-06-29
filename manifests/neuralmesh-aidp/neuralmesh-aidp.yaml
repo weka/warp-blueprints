@@ -30,13 +30,19 @@ x-variables:
   weka_s3_access_key:
     type: string
     required: true
-    description: "WEKA S3 access key. Milvus and the NVIDIA ingestion pipeline use this to read/write the aidp-bucket over the WEKA S3 (MinIO-compatible) endpoint."
+    description: "WEKA S3 access key. Milvus and the NVIDIA ingestion pipeline use this to read/write the configured S3 bucket over the WEKA S3 (MinIO-compatible) endpoint."
     placeholder: "e.g. 0ABCDEF1234567890XYZ"
   weka_s3_secret_key:
     type: string
     required: true
     description: "WEKA S3 secret key paired with the access key above."
     placeholder: "e.g. abcd1234efgh5678ijkl9012mnop3456"
+  weka_s3_bucket_name:
+    type: string
+    required: false
+    default: "aidp-bucket"
+    description: "WEKA S3 bucket name used by Milvus and the NVIDIA ingestion pipeline. Must be pre-created on the WEKA cluster. Defaults to 'aidp-bucket'."
+    placeholder: "e.g. aidp-bucket"
   weka_s3_node_ips:
     type: string
     required: true
@@ -125,11 +131,13 @@ spec:
     # Operator-layer variables. The App Store operator substitutes ${name}
     # for these names in kubernetesManifest strings and valuesFiles content,
     # and leaves every other shell ${...} / $(...) / $$ token untouched
-    # (allowlist substitution). Only the WEKA S3 keys flow through this layer;
-    # all other site-specific values are baked in by the GUI at install time.
+    # (allowlist substitution). WEKA S3 credentials and bucket name flow
+    # through this layer; all other site-specific values are baked in by the
+    # GUI at install time.
     variables:
       wekaS3AccessKey: "[[ weka_s3_access_key ]]"
       wekaS3SecretKey: "[[ weka_s3_secret_key ]]"
+      wekaS3BucketName: "[[ weka_s3_bucket_name ]]"
     components:
 
       - name: aidp-site-config
@@ -207,8 +215,8 @@ spec:
                   APP_VECTORSTORE_ENABLEGPUSEARCH: "False"  # was "True"
                   APP_EMBEDDINGS_SERVERURL: "embedding-proxy.${namespace}.svc.cluster.local:8000/v1"
                   MINIO_ENDPOINT: "nginx-s3-lb-service.${namespace}.svc.cluster.local:9000"
-                  MINIO_BUCKET: "aidp-bucket"
-                  NVINGEST_MINIO_BUCKET: "aidp-bucket"
+                  MINIO_BUCKET: "${wekaS3BucketName}"
+                  NVINGEST_MINIO_BUCKET: "${wekaS3BucketName}"
                   MINIO_ACCESSKEY: "${wekaS3AccessKey}"
                   MINIO_SECRETKEY: "${wekaS3SecretKey}"
                   APP_TRACING_ENABLED: "True"
@@ -851,10 +859,10 @@ spec:
               nv-ingest:
                 envVars:
                   MINIO_INTERNAL_ADDRESS: "nginx-s3-lb-service.${namespace}.svc.cluster.local:9000"
-                  MINIO_BUCKET: "aidp-bucket"
+                  MINIO_BUCKET: "${wekaS3BucketName}"
                   MINIO_ACCESS_KEY: "${wekaS3AccessKey}"
                   MINIO_SECRET_KEY: "${wekaS3SecretKey}"
-                  IMAGE_STORAGE_URI: "s3://aidp-bucket/artifacts/store/images"
+                  IMAGE_STORAGE_URI: "s3://${wekaS3BucketName}/artifacts/store/images"
                   RAY_num_grpc_threads: "4"
                   INGEST_DISABLE_DYNAMIC_SCALING: "true"
                   EMBEDDING_NIM_ENDPOINT: "http://embedding-proxy.${namespace}.svc.cluster.local:8000/v1"
@@ -928,7 +936,7 @@ spec:
             # CPU-only. S3-backed segment storage via WEKA S3; Kafka MQ.
             # Applied to the zilliztech/milvus chart (chart 5.0.5).
             # Connects to WEKA S3 at 192.168.1.1:9000; stores data in
-            # aidp-bucket under the "milvus" root path prefix.
+            # the configured bucket under the "milvus" root path prefix.
             #
             # IMPORTANT: ${wekaS3AccessKey} and ${wekaS3SecretKey} are substituted
             # at apply time via envsubst — see DEPLOY.md §6.
@@ -982,7 +990,7 @@ spec:
                 accessKey: "${wekaS3AccessKey}"
                 secretKey: "${wekaS3SecretKey}"
                 useSSL: false
-                bucketName: "aidp-bucket"
+                bucketName: "${wekaS3BucketName}"
                 rootPath: "milvus"
                 region: ""
                 useIAM: false
@@ -1002,7 +1010,7 @@ spec:
                     accessKeyID: "${wekaS3AccessKey}"
                     secretAccessKey: "${wekaS3SecretKey}"
                     useSSL: false
-                    bucketName: aidp-bucket
+                    bucketName: ${wekaS3BucketName}
                     rootPath: milvus
                     useVirtualHost: false
                   mq:
@@ -2524,7 +2532,7 @@ spec:
       - name: milvus
         enabled: true
         dependsOn: [aidp-bootstrap-secrets, weka-s3-lb, aidp-site-config]
-        description: "Milvus 2.6.3 cluster — vector DB for RAG (S3-backed via WEKA S3 aidp-bucket/milvus, Kafka MQ)"
+        description: "Milvus 2.6.3 cluster — vector DB for RAG (S3-backed via WEKA S3 <configured bucket>/milvus, Kafka MQ)"
         helmChart:
           repository: https://zilliztech.github.io/milvus-helm
           name: milvus
