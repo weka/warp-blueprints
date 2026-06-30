@@ -3050,7 +3050,7 @@ spec:
           # helm treats as a non-existent chart.
           repository: "https://weka.github.io/aidp-helm"
           name: aidp
-          version: "0.1.41"
+          version: "0.1.46"
           releaseName: aidp
           crdsStrategy: Auto
         valuesFiles:
