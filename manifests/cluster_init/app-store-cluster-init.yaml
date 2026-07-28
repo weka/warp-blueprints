@@ -111,7 +111,7 @@ spec:
       #NVIDIA GPU Operator
       - name: nvidia-operator
         description: "Certificate management for Kubernetes"
-        enabled: false
+        enabled: true
         dependsOn:
           - prometheus-adapter
         helmChart:
@@ -367,7 +367,7 @@ spec:
       # Install NVIDIA DCGM ServiceMonitor via operator manifests
       - name: nvidia-dcgm-servicemonitor
         description: "ServiceMonitor for NVIDIA DCGM exporter"
-        enabled: false
+        enabled: true
         dependsOn:
           - kube-prom-stack        # ensure Prometheus Operator (CRDs) is ready
           - nvidia-operator        # ensure DCGM exporter Service exists
@@ -562,15 +562,3 @@ data:
           matches: ""
           as: "vllm_num_incoming_requests_total"
         metricsQuery: sum by(namespace, model) (vllm:num_incoming_requests_total)
----
-#apiVersion: storage.k8s.io/v1
-#kind: StorageClass
-#metadata:
-#  name: default
-#  annotations:
-#    storageclass.kubernetes.io/is-default-class: "true"
-#provisioner: kubernetes.io/aws-ebs
-#reclaimPolicy: Delete
-#volumeBindingMode: WaitForFirstConsumer #This was changed to address the multi AZ nature of EKS
-#parameters:
-#  type: gp3
