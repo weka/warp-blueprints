@@ -13,7 +13,8 @@
 #   3. vss-search     the VSS Search umbrella chart, values loaded from (1)
 #
 # Chart source: https://github.com/weka/neuralmesh-vss3-k8s
-# Container images: nvcr.io (NVIDIA, via NGC credential) and quay.io/weka
+# Container images: nvcr.io (NVIDIA, via NGC credential) and quay.io/weka.io/vss
+# (WEKA-built images, via Quay credential)
 # =============================================================================
 
 # ── Section 1: GUI install form schema ──────────────────────────────────────
@@ -23,11 +24,6 @@ x-variables:
     required: true
     description: "Kubernetes namespace to deploy the VSS Search stack into."
     placeholder: "e.g. vss-search"
-  storage_class:
-    type: string
-    required: true
-    description: "Pre-existing WEKA CSI StorageClass for all persistent volumes (must support ReadWriteMany)."
-    placeholder: "e.g. weka-csi"
   external_host:
     type: string
     required: true
@@ -47,14 +43,11 @@ x-variables:
     type: string
     required: true
     description: "Password for the in-cluster coturn TURN relay used by WebRTC Live View. Choose any strong shared secret."
-  weka_registry_user:
-    type: string
+  quay_credential:
+    type: credential
+    credential_type: quay
     required: true
-    description: "WEKA registry username for quay.io (from your get.weka.io customer portal token)."
-  weka_registry_token:
-    type: string
-    required: true
-    description: "WEKA registry token for quay.io (your get.weka.io token). Used to pull the WEKA-built images from quay.io/weka.io/vss."
+    description: "WEKA Quay.io credential for pulling the WEKA-built images from quay.io/weka.io/vss."
   ngc_credential:
     type: credential
     credential_type: nvidia-ngc
@@ -90,16 +83,15 @@ spec:
   appStack:
     defaultNamespace: [[ namespace ]]
     variables:
-      storage_class: "[[ storage_class ]]"
       external_host: "[[ external_host ]]"
       external_port: "[[ external_port ]]"
       gpu_type: "[[ gpu_type ]]"
       turn_password: "[[ turn_password ]]"
-      weka_registry_user: "[[ weka_registry_user ]]"
-      weka_registry_token: "[[ weka_registry_token ]]"
       # Derived secrets provided by the selected NGC credential
       ngc_docker_secret: "warp-[[ ngc_credential ]]-docker"
       ngc_apikey_secret: "warp-[[ ngc_credential ]]-apikey"
+      # Derived secret provided by the selected Quay credential
+      quay_docker_secret: "warp-[[ quay_credential ]]-docker"
     components:
 
       # ── 1. Helm values for the stack, as a ConfigMap ──────────────────────
@@ -107,19 +99,10 @@ spec:
       # is applied. The vss-search component loads the result via valuesFiles.
       - name: vss-values
         description: "Helm values for the VSS Search umbrella chart"
+        dependsOn:
+          - storageclasses
         waitForReady: false
         kubernetesManifest: |
-          apiVersion: v1
-          kind: Secret
-          metadata:
-            name: weka-quay-secret
-            namespace: ${namespace}
-            labels:
-              app.kubernetes.io/part-of: vss-search
-          type: kubernetes.io/dockerconfigjson
-          stringData:
-            .dockerconfigjson: '{"auths":{"quay.io":{"username":"${weka_registry_user}","password":"${weka_registry_token}"}}}'
-          ---
           apiVersion: v1
           kind: ConfigMap
           metadata:
@@ -138,7 +121,7 @@ spec:
                 # Read by the nims subchart NIMCache/NIMService resources:
                 pullSecretName: "${ngc_docker_secret}"
                 authSecretName: "${ngc_apikey_secret}"
-                storageClass: "${storage_class}"
+                storageClass: storageclass-wekafs-dir-vss
                 webrtc:
                   enabled: true
                   password: "${turn_password}"
@@ -151,25 +134,25 @@ spec:
               # WEKA CSI driver; the chart does not manage it.
               weka:
                 createStorageClass: false
-                storageClassName: "${storage_class}"
+                storageClassName: storageclass-wekafs-dir-vss
 
               # ── volumes shared by multiple pods (ReadWriteMany) ───────────
               sharedStorage:
                 streamerVideos:
                   enabled: true
-                  storageClass: "${storage_class}"
+                  storageClass: storageclass-wekafs-dir-vss
                   accessMode: ReadWriteMany
                   size: 50Gi
               sensor-ms:
                 persistence:
                   useEmptyDir: false
-                  storageClass: "${storage_class}"
+                  storageClass: storageclass-wekafs-dir-vss
                   accessMode: ReadWriteMany
               nvstreamer:
                 imagePullSecrets:
                   - name: "${ngc_docker_secret}"
                 persistence:
-                  storageClass: "${storage_class}"
+                  storageClass: storageclass-wekafs-dir-vss
                   accessMode: ReadWriteMany
 
               # ── single-writer volumes (ReadWriteOnce; pods can still ──────
@@ -177,22 +160,22 @@ spec:
               centralizedb:
                 storage:
                   data:
-                    storageClass: "${storage_class}"
+                    storageClass: storageclass-wekafs-dir-vss
               redis:
                 persistence:
-                  storageClass: "${storage_class}"
+                  storageClass: storageclass-wekafs-dir-vss
               phoenix:
                 persistence:
-                  storageClass: "${storage_class}"
+                  storageClass: storageclass-wekafs-dir-vss
               kafka:
                 persistence:
-                  storageClass: "${storage_class}"
+                  storageClass: storageclass-wekafs-dir-vss
               elasticsearch:
                 persistence:
-                  storageClass: "${storage_class}"
+                  storageClass: storageclass-wekafs-dir-vss
               logstash:
                 persistence:
-                  storageClass: "${storage_class}"
+                  storageClass: storageclass-wekafs-dir-vss
 
               # ── VST stream processing ─────────────────────────────────────
               streamprocessing-ms:
@@ -202,7 +185,7 @@ spec:
                 # serve empty streams.
                 replicas: 1
                 persistence:
-                  storageClass: "${storage_class}"
+                  storageClass: storageclass-wekafs-dir-vss
                   sharedAccessMode: ReadWriteMany
                 # Incident-clip volume: grows on demand and evicts the oldest
                 # clips at the ceiling (sized for ~24h retention at 4 streams).
@@ -224,7 +207,7 @@ spec:
                 imagePullSecrets:
                   - name: "${ngc_docker_secret}"
                 persistence:
-                  storageClass: "${storage_class}"
+                  storageClass: storageclass-wekafs-dir-vss
                   accessMode: ReadWriteMany
                 modelName2D: "GDINO"       # open-vocabulary detector; classes set via gdino.typeName
                 models:
@@ -239,7 +222,7 @@ spec:
                   repository: "quay.io/weka.io/vss"
                   tag: "perception-router-310-0.2.0"
                 imagePullSecrets:
-                  - name: weka-quay-secret
+                  - name: "${quay_docker_secret}"
 
               # ── embeddings ────────────────────────────────────────────────
               rtvi-embed:
@@ -249,7 +232,7 @@ spec:
                   name: "${ngc_apikey_secret}"
                   key: "NGC_API_KEY"
                 persistence:
-                  storageClass: "${storage_class}"
+                  storageClass: storageclass-wekafs-dir-vss
                 clipStorage:
                   enabled: false
                   hostPath: ""
@@ -272,19 +255,19 @@ spec:
                   repository: "quay.io/weka.io/vss"
                   tag: "multi-alert-classifier-0.4.0"
                 imagePullSecrets:
-                  - name: weka-quay-secret
+                  - name: "${quay_docker_secret}"
 
               # ── agent + UI ────────────────────────────────────────────────
               agents:
                 imagePullSecrets:
-                  - name: "${ngc_docker_secret}"   # vss-ui (nvcr.io)
-                  - name: weka-quay-secret         # vss-agent (quay.io/weka.io/vss)
+                  - name: "${ngc_docker_secret}"      # vss-ui (nvcr.io)
+                  - name: "${quay_docker_secret}"      # vss-agent (quay.io/weka.io/vss)
                 vssAgent:
                   # LLM/VLM/VST/Elasticsearch/Phoenix endpoints are not set
                   # here: the chart wires them to the in-cluster services
                   # automatically.
                   agentEval:
-                    storageClass: "${storage_class}"
+                    storageClass: storageclass-wekafs-dir-vss
                   customTools:
                     enabled: true          # alert-history search from chat
                     clipZoomAnalysis:
@@ -316,20 +299,20 @@ spec:
               nims:
                 gpuType: "${gpu_type}"
 
-      # ── 2. NVIDIA NIM Operator (provides NIMCache/NIMService CRDs) ────────
-      - name: nim-operator
-        description: "NVIDIA NIM Operator"
-        helmChart:
-          repository: https://helm.ngc.nvidia.com/nvidia
-          name: k8s-nim-operator
-          version: "3.1.1"
-          releaseName: k8s-nim-operator
-          crdsStrategy: Auto
-        waitForReady: true
-        readinessCheck:
-          type: deployment
-          selector: "app.kubernetes.io/name=k8s-nim-operator"
-          timeout: 300
+#      # ── 2. NVIDIA NIM Operator (provides NIMCache/NIMService CRDs) ────────
+#      - name: nim-operator
+#        description: "NVIDIA NIM Operator"
+#        helmChart:
+#          repository: https://helm.ngc.nvidia.com/nvidia
+#          name: k8s-nim-operator
+#          version: "3.1.1"
+#          releaseName: k8s-nim-operator
+#          crdsStrategy: Auto
+#        waitForReady: true
+#        readinessCheck:
+#          type: deployment
+#          selector: "app.kubernetes.io/name=k8s-nim-operator"
+#          timeout: 300
 
       # ── 3. The VSS Search stack ────────────────────────────────────────────
       - name: vss-search
@@ -337,6 +320,7 @@ spec:
         dependsOn:
           - vss-values
           - nim-operator
+          - storageclasses
         helmChart:
           name: https://github.com/weka/neuralmesh-vss3-k8s/releases/download/vss-search-26.04.1/dev-profile-search-26.04.1.tgz
           releaseName: vss-search
@@ -353,3 +337,46 @@ spec:
           type: deployment
           name: vss-search-ui-proxy
           timeout: 1800
+
+      # -----------------------------------------------------------------------
+      # STAGE 4: StorageClasses (depends on demote Job)
+      # Three StorageClasses in one manifest block:
+      #   1. storageclass-wekafs-dir-api — DELETE policy, is-default-class=true
+      #   2. storageclass-wekafs-dir-api-retain — RETAIN policy, not default
+      #   3. storageclass-wekafs-fs-api — filesystem-backed, RETAIN, not default
+      # All reference csi-wekafs-api-secret in csi-wekafs namespace.
+      # -----------------------------------------------------------------------
+
+      - name: storageclasses
+        description: "Three WEKA StorageClasses: dir-api (default), dir-api-retain, fs-api"
+        enabled: true
+        dependsOn:
+          - storageclass-demote-job
+        kubernetesManifest: |
+          apiVersion: storage.k8s.io/v1
+          kind: StorageClass
+          metadata:
+            name: storageclass-wekafs-dir-vss
+            annotations:
+              storageclass.kubernetes.io/is-default-class: "false"
+          provisioner: csi.weka.io
+          reclaimPolicy: Retain
+          volumeBindingMode: Immediate
+          allowVolumeExpansion: true
+          parameters:
+            volumeType: dir/v1
+            filesystemName: vss
+            capacityEnforcement: HARD
+            ownerUid: "1000"
+            ownerGid: "1000"
+            permissions: "0775"
+            csi.storage.k8s.io/provisioner-secret-name: csi-wekafs-api-secret
+            csi.storage.k8s.io/provisioner-secret-namespace: csi-wekafs
+            csi.storage.k8s.io/controller-publish-secret-name: csi-wekafs-api-secret
+            csi.storage.k8s.io/controller-publish-secret-namespace: csi-wekafs
+            csi.storage.k8s.io/controller-expand-secret-name: csi-wekafs-api-secret
+            csi.storage.k8s.io/controller-expand-secret-namespace: csi-wekafs
+            csi.storage.k8s.io/node-stage-secret-name: csi-wekafs-api-secret
+            csi.storage.k8s.io/node-stage-secret-namespace: csi-wekafs
+            csi.storage.k8s.io/node-publish-secret-name: csi-wekafs-api-secret
+            csi.storage.k8s.io/node-publish-secret-namespace: csi-wekafs
