@@ -319,7 +319,6 @@ spec:
         description: "VSS Search on WEKA (video ingest, perception, analytics, agent, UI)"
         dependsOn:
           - vss-values
-          - nim-operator
           - storageclasses
         helmChart:
           name: https://github.com/weka/neuralmesh-vss3-k8s/releases/download/vss-search-26.04.1/dev-profile-search-26.04.1.tgz
