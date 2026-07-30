@@ -29,11 +29,6 @@ x-variables:
     required: true
     description: "Node IP or DNS name browsers use to reach the cluster. Used for UI links, WebRTC TURN, and clip download URLs."
     placeholder: "e.g. 10.20.30.40 or vss.example.com"
-  external_port:
-    type: string
-    required: false
-    description: "External port of the ingress controller when it is not on :80 (e.g. NodePort). Leave empty for a load-balanced :80 ingress."
-    placeholder: "e.g. 30080"
   gpu_type:
     type: radio
     required: true
@@ -91,7 +86,6 @@ spec:
     defaultNamespace: [[ namespace ]]
     variables:
       external_host: "[[ external_host ]]"
-      external_port: "[[ external_port ]]"
       gpu_type: "[[ gpu_type ]]"
       turn_password: "[[ turn_password ]]"
       # Derived secrets provided by the selected NGC credential
@@ -306,11 +300,23 @@ spec:
                 webrtc:
                   enabled: true
                   password: "${turn_password}"
+                # Ingress stays "enabled" so the chart's own URL-building
+                # helpers (agent base URL, VST clip-link rewriting, MDX/API
+                # links) keep constructing single-host, path-based URLs --
+                # the same shape vss-search-ui-route (below) serves. mainHost
+                # is pinned to external_host directly so those URLs don't
+                # depend on the nip.io public-DNS trick the chart otherwise
+                # falls back to (unreliable with no outbound internet DNS).
                 ingress:
                   enabled: true
-                  externalPort: "${external_port}"
+                  mainHost: "${external_host}"
+              # The chart's own Ingress object is disabled: this cluster has
+              # no nginx ingress controller (no IngressClass, no controller
+              # pods). Routing is provided instead by the vss-search-ui-route
+              # HTTPRoute component below, attached to the pre-installed
+              # Envoy Gateway (warp-edge-gateway).
               ingress:
-                className: nginx
+                enabled: false
               # The StorageClass is a cluster prerequisite, created with the
               # WEKA CSI driver; the chart does not manage it.
               weka:
@@ -518,6 +524,254 @@ spec:
           type: deployment
           name: vss-search-ui-proxy
           timeout: 1800
+
+      # ── 4. Route: attach VSS to the pre-installed Envoy Gateway ────────────
+      # Replicates the chart's own templates/ingress.yaml path rules (main
+      # host only -- streamer/kibana/phoenix stay internal-only for now) as a
+      # single HTTPRoute on the shared warp-edge-gateway, fed by external_host.
+      # Longest-prefix-match is used by Gateway API regardless of rule order,
+      # but rules are kept in the same order as the source Ingress for
+      # readability. Long-lived chat SSE/websocket connections need extended
+      # timeouts (nginx used 3600s annotations for the same reason).
+      - name: vss-search-ui-route
+        description: "HTTPRoute attaching VSS Search to the shared Envoy Gateway"
+        dependsOn:
+          - vss-search
+        kubernetesManifest: |
+          apiVersion: gateway.networking.k8s.io/v1
+          kind: HTTPRoute
+          metadata:
+            name: vss-search-ui-route
+            namespace: ${namespace}
+          spec:
+            parentRefs:
+              - name: warp-edge-gateway
+                namespace: envoy-gateway-system
+            hostnames:
+              - "${external_host}"
+            rules:
+              # Alerts tab MDX API: longer prefix than /api, so it wins.
+              - matches:
+                  - path:
+                      type: PathPrefix
+                      value: /api/v3.0/analytics
+                timeouts:
+                  request: 3600s
+                  backendRequest: 3600s
+                backendRefs:
+                  - name: vss-search-ui-proxy
+                    port: 3080
+              - matches:
+                  - path:
+                      type: PathPrefix
+                      value: /api/chat
+                timeouts:
+                  request: 3600s
+                  backendRequest: 3600s
+                backendRefs:
+                  - name: vss-search-agents-vss-ui
+                    port: 3000
+              - matches:
+                  - path:
+                      type: PathPrefix
+                      value: /api
+                timeouts:
+                  request: 3600s
+                  backendRequest: 3600s
+                backendRefs:
+                  - name: vss-search-agents-vss-agent
+                    port: 8000
+              - matches:
+                  - path:
+                      type: PathPrefix
+                      value: /chat
+                timeouts:
+                  request: 3600s
+                  backendRequest: 3600s
+                backendRefs:
+                  - name: vss-search-agents-vss-agent
+                    port: 8000
+              - matches:
+                  - path:
+                      type: PathPrefix
+                      value: /websocket
+                timeouts:
+                  request: 3600s
+                  backendRequest: 3600s
+                backendRefs:
+                  - name: vss-search-agents-vss-agent
+                    port: 8000
+              - matches:
+                  - path:
+                      type: PathPrefix
+                      value: /static
+                backendRefs:
+                  - name: vss-search-agents-vss-agent
+                    port: 8000
+              - matches:
+                  - path:
+                      type: PathPrefix
+                      value: /vst
+                timeouts:
+                  request: 3600s
+                  backendRequest: 3600s
+                backendRefs:
+                  - name: vss-search-vst-ingress
+                    port: 8000
+              - matches:
+                  - path:
+                      type: PathPrefix
+                      value: /
+                backendRefs:
+                  - name: vss-search-ui-proxy
+                    port: 3080
+
+      # ── 5. Internal DNS for VST clip URLs ──────────────────────────────────
+      # The chart's vst-ingress component rewrites clip/thumbnail media URLs
+      # in API responses to the SAME external_host used above (see chart
+      # README: "clip downloads fetched by the VLM and by the browser" --
+      # there is no internal-service-DNS variant of this rewrite). That means
+      # a small, known set of backend pods must resolve external_host from
+      # inside the cluster:
+      #   - vss-search-agents-vss-agent   (clipZoomAnalysis tool)
+      #   - vss-search-behavior-analytics-alerts (alert-bridge VLM verifier)
+      #   - vss-search-multi-alert-classifier-classifier (VLM alert pipeline)
+      # CoreDNS can't resolve external_host, and hitting the MetalLB LB IP
+      # from inside a pod hairpins unreliably -- so this discovers Envoy's
+      # Service ClusterIP (same approach as neuralmesh-aidp's
+      # envoy-endpoint-discovery component) and patches it onto those
+      # Deployments as a hostAliases entry. The VSS chart has no hostAliases
+      # values hook (unlike WEKA's own AIDP chart), so this is an imperative
+      # patch rather than a Helm value; it would need re-running if this
+      # release is ever reinstalled with new values.
+      - name: vss-envoy-hostalias
+        description: "Patch hostAliases so VLM/agent pods can resolve external_host in-cluster"
+        dependsOn:
+          - vss-search
+        kubernetesManifest: |
+          apiVersion: v1
+          kind: ServiceAccount
+          metadata:
+            name: vss-envoy-hostalias
+            namespace: ${namespace}
+          ---
+          # Role — read-only, scoped to Services in envoy-gateway-system, to
+          # discover the Envoy Gateway's ClusterIP.
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: Role
+          metadata:
+            name: vss-envoy-hostalias-read
+            namespace: envoy-gateway-system
+          rules:
+            - apiGroups: [""]
+              resources: ["services"]
+              verbs: ["get", "list"]
+          ---
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: RoleBinding
+          metadata:
+            name: vss-envoy-hostalias-read
+            namespace: envoy-gateway-system
+          subjects:
+            - kind: ServiceAccount
+              name: vss-envoy-hostalias
+              namespace: ${namespace}
+          roleRef:
+            apiGroup: rbac.authorization.k8s.io
+            kind: Role
+            name: vss-envoy-hostalias-read
+          ---
+          # Role — patch only the three named Deployments in this namespace.
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: Role
+          metadata:
+            name: vss-envoy-hostalias-patch
+            namespace: ${namespace}
+          rules:
+            - apiGroups: ["apps"]
+              resources: ["deployments"]
+              resourceNames:
+                - "vss-search-agents-vss-agent"
+                - "vss-search-behavior-analytics-alerts"
+                - "vss-search-multi-alert-classifier-classifier"
+              verbs: ["get", "patch"]
+          ---
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: RoleBinding
+          metadata:
+            name: vss-envoy-hostalias-patch
+            namespace: ${namespace}
+          subjects:
+            - kind: ServiceAccount
+              name: vss-envoy-hostalias
+              namespace: ${namespace}
+          roleRef:
+            apiGroup: rbac.authorization.k8s.io
+            kind: Role
+            name: vss-envoy-hostalias-patch
+          ---
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: vss-envoy-hostalias
+            namespace: ${namespace}
+          spec:
+            backoffLimit: 6
+            ttlSecondsAfterFinished: 60
+            template:
+              spec:
+                restartPolicy: OnFailure
+                serviceAccountName: vss-envoy-hostalias
+                containers:
+                  - name: patch
+                    image: alpine/k8s:1.30.0
+                    env:
+                      - name: NS
+                        valueFrom:
+                          fieldRef:
+                            fieldPath: metadata.namespace
+                      - name: EXTERNAL_HOST
+                        value: "${external_host}"
+                    command:
+                      - /bin/bash
+                      - -c
+                      - |
+                        {%- raw %}
+                        set -euo pipefail
+                        echo "Discovering Envoy Gateway ClusterIP..."
+
+                        ENVOY_IP=""
+                        for i in $(seq 1 30); do
+                          ENVOY_IP=$(kubectl -n envoy-gateway-system get svc \
+                            -l 'gateway.envoyproxy.io/owning-gateway-name=warp-edge-gateway' \
+                            -o jsonpath='{.items[0].spec.clusterIP}' 2>/dev/null || true)
+                          [[ -n "${ENVOY_IP}" ]] && break
+                          echo "  waiting for Envoy Gateway... (${i}/30)"
+                          sleep 5
+                        done
+
+                        if [[ -z "${ENVOY_IP}" ]]; then
+                          echo "ERROR: Envoy Gateway service not found in envoy-gateway-system." >&2
+                          exit 1
+                        fi
+                        echo "Discovered Envoy Gateway ClusterIP: ${ENVOY_IP}"
+
+                        PATCH=$(cat <<EOF
+                        {"spec":{"template":{"spec":{"hostAliases":[{"ip":"${ENVOY_IP}","hostnames":["${EXTERNAL_HOST}"]}]}}}}
+                        EOF
+                        )
+
+                        for DEPLOY in vss-search-agents-vss-agent vss-search-behavior-analytics-alerts vss-search-multi-alert-classifier-classifier; do
+                          echo "Patching ${DEPLOY}..."
+                          kubectl -n "${NS}" patch deployment "${DEPLOY}" --type=strategic -p "${PATCH}"
+                        done
+
+                        echo "hostAliases patched: ${EXTERNAL_HOST} -> ${ENVOY_IP}"
+                        {% endraw %}
+        readinessCheck:
+          type: job
+          name: vss-envoy-hostalias
+          timeout: 300
 
       # -----------------------------------------------------------------------
       # STAGE 4: StorageClasses (depends on demote Job)
