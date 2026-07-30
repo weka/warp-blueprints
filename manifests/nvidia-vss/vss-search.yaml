@@ -73,7 +73,7 @@ x-requirements:
   memory:
     gib: 64
   gpu:
-    count: 12
+    count: 6
     model: "RTX PRO 6000 SE"
 
 # ── Section 2: Kubernetes resource (submitted by the GUI after rendering) ───
