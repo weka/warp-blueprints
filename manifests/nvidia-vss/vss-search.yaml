@@ -35,10 +35,17 @@ x-variables:
     description: "External port of the ingress controller when it is not on :80 (e.g. NodePort). Leave empty for a load-balanced :80 ingress."
     placeholder: "e.g. 30080"
   gpu_type:
-    type: string
+    type: radio
     required: true
-    description: "GPU model of the worker nodes. One of: H100, L40S, RTXPRO6000BW."
-    placeholder: "H100"
+    default: "H100"
+    options:
+      - value: "H100"
+        label: "H100"
+      - value: "L40S"
+        label: "L40S"
+      - value: "RTXPRO6000BW"
+        label: "RTX PRO 6000 (Blackwell)"
+    description: "GPU model of the worker nodes."
   turn_password:
     type: string
     required: true
