@@ -62,16 +62,19 @@ x-variables:
 # =============================================================================
 # Drives the "Cluster Compatibility" panel on the blueprint page. The GUI
 # compares these against the cluster's currently-free capacity.
-#   - gpu: authoritative — the NVIDIA RAG GPU profile below is sized for
-#     3 nodes x 4x RTX PRO 6000 SE (96 GB each) = 12 GPUs.
-#   - cpu/memory: recommended cluster minimums. The exact per-pod requests
-#     live inside the NVIDIA NIM Helm charts (not visible to the GUI), so these
-#     are conservative aggregate floors for the full AIDP stack.
+#   - cpu/memory: measured by summing container resource requests across all
+#     28 pods on a live deployment (kubectl get pods -n vss -o json), then
+#     rounded up for headroom. Actual sums were 22.41 cores / 73.28 GiB
+#     requested (34.50 cores / 101.62 GiB at limits); live usage was much
+#     lower (~2.2 cores / ~51 GiB), since NIM pods request for the model
+#     they load rather than steady-state usage. Re-measure if the chart
+#     version or enabled components change.
+#   - gpu: sized for the NIM profile (Nemotron Nano 9B + Cosmos Reason2 8B).
 x-requirements:
   cpu:
-    cores: 28
+    cores: 24
   memory:
-    gib: 64
+    gib: 80
   gpu:
     count: 6
     model: "RTX PRO 6000 SE"
