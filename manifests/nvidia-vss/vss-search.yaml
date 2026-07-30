@@ -349,8 +349,6 @@ spec:
       - name: storageclasses
         description: "Three WEKA StorageClasses: dir-api (default), dir-api-retain, fs-api"
         enabled: true
-        dependsOn:
-          - storageclass-demote-job
         kubernetesManifest: |
           apiVersion: storage.k8s.io/v1
           kind: StorageClass
