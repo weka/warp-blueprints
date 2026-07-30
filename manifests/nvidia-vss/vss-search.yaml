@@ -101,6 +101,180 @@ spec:
       quay_docker_secret: "warp-[[ quay_credential ]]-docker"
     components:
 
+      # ── 0. Bootstrap credential secrets ───────────────────────────────────
+      # The selected nvidia-ngc and quay credentials' derived secrets live in
+      # the App Store's own namespace (${appStoreNamespace}), not in this
+      # blueprint's target namespace — WarpCredential secrets are never
+      # automatically copied across namespaces. This mirrors the
+      # aidp-bootstrap-ngc-secrets pattern in neuralmesh-aidp.yaml: a
+      # ServiceAccount + cross-namespace Role/RoleBinding (read-only, scoped
+      # to these three secret names) + a Job that copies each secret verbatim
+      # into ${namespace} under the SAME name the rest of this blueprint
+      # already references (${ngc_docker_secret}, ${ngc_apikey_secret},
+      # ${quay_docker_secret}), so no other component needs to change.
+      - name: vss-bootstrap-credential-secrets
+        enabled: true
+        dependsOn: []
+        description: "Copy the selected nvidia-ngc and quay credentials' derived secrets from the App Store namespace into this namespace."
+        kubernetesManifest: |
+          apiVersion: v1
+          kind: ServiceAccount
+          metadata:
+            name: credential-secret-sync
+            namespace: ${namespace}
+            labels:
+              app.kubernetes.io/component: appstack-bootstrap
+          ---
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: Role
+          metadata:
+            name: credential-secret-sync
+            namespace: ${namespace}
+          rules:
+            - apiGroups: [""]
+              resources: ["secrets"]
+              verbs: ["create"]
+            - apiGroups: [""]
+              resources: ["secrets"]
+              resourceNames:
+                - "${ngc_docker_secret}"
+                - "${ngc_apikey_secret}"
+                - "${quay_docker_secret}"
+              verbs: ["get", "update", "patch"]
+          ---
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: RoleBinding
+          metadata:
+            name: credential-secret-sync
+            namespace: ${namespace}
+          subjects:
+            - kind: ServiceAccount
+              name: credential-secret-sync
+              namespace: ${namespace}
+          roleRef:
+            apiGroup: rbac.authorization.k8s.io
+            kind: Role
+            name: credential-secret-sync
+          ---
+          # App Store namespace Role: read ONLY the three derived secrets for
+          # the selected credentials. Created in ${appStoreNamespace}; bound
+          # to the target-namespace ServiceAccount above.
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: Role
+          metadata:
+            name: vss-credential-secret-sync-read
+            namespace: ${appStoreNamespace}
+          rules:
+            - apiGroups: [""]
+              resources: ["secrets"]
+              resourceNames:
+                - "${ngc_docker_secret}"
+                - "${ngc_apikey_secret}"
+                - "${quay_docker_secret}"
+              verbs: ["get"]
+          ---
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: RoleBinding
+          metadata:
+            name: vss-credential-secret-sync-read
+            namespace: ${appStoreNamespace}
+          subjects:
+            - kind: ServiceAccount
+              name: credential-secret-sync
+              namespace: ${namespace}
+          roleRef:
+            apiGroup: rbac.authorization.k8s.io
+            kind: Role
+            name: vss-credential-secret-sync-read
+          ---
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: credential-secret-sync
+            namespace: ${namespace}
+            labels:
+              app.kubernetes.io/component: appstack-bootstrap
+          spec:
+            backoffLimit: 3
+            ttlSecondsAfterFinished: 60
+            template:
+              spec:
+                restartPolicy: OnFailure
+                serviceAccountName: credential-secret-sync
+                containers:
+                  - name: sync
+                    image: alpine/k8s:1.30.0
+                    env:
+                      - name: NS
+                        valueFrom:
+                          fieldRef:
+                            fieldPath: metadata.namespace
+                      - name: NGC_DOCKER_SECRET
+                        value: "${ngc_docker_secret}"
+                      - name: NGC_APIKEY_SECRET
+                        value: "${ngc_apikey_secret}"
+                      - name: QUAY_DOCKER_SECRET
+                        value: "${quay_docker_secret}"
+                    command:
+                      - /bin/bash
+                      - -c
+                      - |
+                        {%- raw %}
+                        set -euo pipefail
+
+                        copy_dockerconfigjson() {
+                          local name="$1"
+                          echo "Copying ${name} from ${appStoreNamespace} into ${NS}..."
+                          local dcj
+                          dcj=$(kubectl get secret "${name}" -n ${appStoreNamespace} -o jsonpath='{.data.\.dockerconfigjson}')
+                          if [[ -z "${dcj}" ]]; then
+                            echo "ERROR: ${name} not found / empty in ${appStoreNamespace}." >&2
+                            echo "Hint: register the credential on the Settings page and wait for it to sync." >&2
+                            exit 1
+                          fi
+                          cat <<EOF | kubectl apply -f -
+                        apiVersion: v1
+                        kind: Secret
+                        metadata:
+                          name: ${name}
+                          namespace: ${NS}
+                          labels:
+                            app.kubernetes.io/managed-by: vss-bootstrap
+                        type: kubernetes.io/dockerconfigjson
+                        data:
+                          .dockerconfigjson: "${dcj}"
+                        EOF
+                        }
+
+                        copy_dockerconfigjson "${NGC_DOCKER_SECRET}"
+                        copy_dockerconfigjson "${QUAY_DOCKER_SECRET}"
+
+                        echo "Copying ${NGC_APIKEY_SECRET} from ${appStoreNamespace} into ${NS}..."
+                        NGC_KEY_B64=$(kubectl get secret "${NGC_APIKEY_SECRET}" -n ${appStoreNamespace} -o jsonpath='{.data.NGC_API_KEY}')
+                        if [[ -z "${NGC_KEY_B64}" ]]; then
+                          echo "ERROR: NGC_API_KEY missing in ${NGC_APIKEY_SECRET}." >&2
+                          exit 1
+                        fi
+                        cat <<EOF | kubectl apply -f -
+                        apiVersion: v1
+                        kind: Secret
+                        metadata:
+                          name: ${NGC_APIKEY_SECRET}
+                          namespace: ${NS}
+                          labels:
+                            app.kubernetes.io/managed-by: vss-bootstrap
+                        type: Opaque
+                        data:
+                          NGC_API_KEY: "${NGC_KEY_B64}"
+                        EOF
+
+                        echo "Credential secrets synced into ${NS}."
+                        {% endraw %}
+        readinessCheck:
+          type: job
+          name: credential-secret-sync
+          timeout: 180
+
       # ── 1. Helm values for the stack, as a ConfigMap ──────────────────────
       # ${ } tokens are resolved by the App Store operator when this manifest
       # is applied. The vss-search component loads the result via valuesFiles.
@@ -327,6 +501,7 @@ spec:
         dependsOn:
           - vss-values
           - storageclasses
+          - vss-bootstrap-credential-secrets
         helmChart:
           name: https://github.com/weka/neuralmesh-vss3-k8s/releases/download/vss-search-26.04.1/dev-profile-search-26.04.1.tgz
           releaseName: vss-search
