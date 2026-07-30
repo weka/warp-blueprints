@@ -1,0 +1,355 @@
+# =============================================================================
+# WEKA App Store blueprint — VSS Search on WEKA
+# =============================================================================
+# Deploys the NVIDIA Metropolis VSS 3.1.0 search profile, adapted for
+# multi-node Kubernetes on WEKA storage: video ingest (VST), GPU perception
+# (DeepStream + GDINO open-vocabulary detection), Kafka/Elasticsearch
+# analytics, VLM-verified alerts, NVIDIA NIMs (Nemotron Nano 9B LLM + Cosmos
+# Reason2 8B VLM), a chat/alerts agent, and the WEKA-branded web UI.
+#
+# Components deploy in dependency order:
+#   1. vss-values     ConfigMap carrying the Helm values for the stack
+#   2. nim-operator   NVIDIA NIM Operator (NIMCache/NIMService CRDs)
+#   3. vss-search     the VSS Search umbrella chart, values loaded from (1)
+#
+# Chart source: https://github.com/weka/neuralmesh-vss3-k8s
+# Container images: nvcr.io (NVIDIA, via NGC credential) and quay.io/weka
+# =============================================================================
+
+# ── Section 1: GUI install form schema ──────────────────────────────────────
+x-variables:
+  namespace:
+    type: string
+    required: true
+    description: "Kubernetes namespace to deploy the VSS Search stack into."
+    placeholder: "e.g. vss-search"
+  storage_class:
+    type: string
+    required: true
+    description: "Pre-existing WEKA CSI StorageClass for all persistent volumes (must support ReadWriteMany)."
+    placeholder: "e.g. weka-csi"
+  external_host:
+    type: string
+    required: true
+    description: "Node IP or DNS name browsers use to reach the cluster. Used for UI links, WebRTC TURN, and clip download URLs."
+    placeholder: "e.g. 10.20.30.40 or vss.example.com"
+  external_port:
+    type: string
+    required: false
+    description: "External port of the ingress controller when it is not on :80 (e.g. NodePort). Leave empty for a load-balanced :80 ingress."
+    placeholder: "e.g. 30080"
+  gpu_type:
+    type: string
+    required: true
+    description: "GPU model of the worker nodes. One of: H100, L40S, RTXPRO6000BW."
+    placeholder: "H100"
+  turn_password:
+    type: string
+    required: true
+    description: "Password for the in-cluster coturn TURN relay used by WebRTC Live View. Choose any strong shared secret."
+  weka_registry_user:
+    type: string
+    required: true
+    description: "WEKA registry username for quay.io (from your get.weka.io customer portal token)."
+  weka_registry_token:
+    type: string
+    required: true
+    description: "WEKA registry token for quay.io (your get.weka.io token). Used to pull the WEKA-built images from quay.io/weka.io/vss."
+  ngc_credential:
+    type: credential
+    credential_type: nvidia-ngc
+    required: true
+    description: "NVIDIA NGC credential for pulling NIM/VSS images and downloading model weights."
+
+# =============================================================================
+# Cluster compatibility requirements (read by the WEKA App Store GUI)
+# =============================================================================
+# Drives the "Cluster Compatibility" panel on the blueprint page. The GUI
+# compares these against the cluster's currently-free capacity.
+#   - gpu: authoritative — the NVIDIA RAG GPU profile below is sized for
+#     3 nodes x 4x RTX PRO 6000 SE (96 GB each) = 12 GPUs.
+#   - cpu/memory: recommended cluster minimums. The exact per-pod requests
+#     live inside the NVIDIA NIM Helm charts (not visible to the GUI), so these
+#     are conservative aggregate floors for the full AIDP stack.
+x-requirements:
+  cpu:
+    cores: 28
+  memory:
+    gib: 64
+  gpu:
+    count: 12
+    model: "RTX PRO 6000 SE"
+
+# ── Section 2: Kubernetes resource (submitted by the GUI after rendering) ───
+apiVersion: warp.io/v1alpha1
+kind: WekaAppStore
+metadata:
+  name: vss-search
+  namespace: [[ namespace ]]
+spec:
+  appStack:
+    defaultNamespace: [[ namespace ]]
+    variables:
+      storage_class: "[[ storage_class ]]"
+      external_host: "[[ external_host ]]"
+      external_port: "[[ external_port ]]"
+      gpu_type: "[[ gpu_type ]]"
+      turn_password: "[[ turn_password ]]"
+      weka_registry_user: "[[ weka_registry_user ]]"
+      weka_registry_token: "[[ weka_registry_token ]]"
+      # Derived secrets provided by the selected NGC credential
+      ngc_docker_secret: "warp-[[ ngc_credential ]]-docker"
+      ngc_apikey_secret: "warp-[[ ngc_credential ]]-apikey"
+    components:
+
+      # ── 1. Helm values for the stack, as a ConfigMap ──────────────────────
+      # ${ } tokens are resolved by the App Store operator when this manifest
+      # is applied. The vss-search component loads the result via valuesFiles.
+      - name: vss-values
+        description: "Helm values for the VSS Search umbrella chart"
+        waitForReady: false
+        kubernetesManifest: |
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: weka-quay-secret
+            namespace: ${namespace}
+            labels:
+              app.kubernetes.io/part-of: vss-search
+          type: kubernetes.io/dockerconfigjson
+          stringData:
+            .dockerconfigjson: '{"auths":{"quay.io":{"username":"${weka_registry_user}","password":"${weka_registry_token}"}}}'
+          ---
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: vss-search-values
+            namespace: ${namespace}
+            labels:
+              app.kubernetes.io/part-of: vss-search
+          data:
+            values.yaml: |
+              global:
+                externalHost: "${external_host}"
+                enableCritic: true                     # Cosmos VLM NIM (VLM-verified alerts)
+                ngcApiKey: ""                          # unused: NGC auth comes from the credential's derived secrets
+                imagePullSecrets:
+                  - name: "${ngc_docker_secret}"
+                # Read by the nims subchart NIMCache/NIMService resources:
+                pullSecretName: "${ngc_docker_secret}"
+                authSecretName: "${ngc_apikey_secret}"
+                storageClass: "${storage_class}"
+                webrtc:
+                  enabled: true
+                  password: "${turn_password}"
+                ingress:
+                  enabled: true
+                  externalPort: "${external_port}"
+              ingress:
+                className: nginx
+              # The StorageClass is a cluster prerequisite, created with the
+              # WEKA CSI driver; the chart does not manage it.
+              weka:
+                createStorageClass: false
+                storageClassName: "${storage_class}"
+
+              # ── volumes shared by multiple pods (ReadWriteMany) ───────────
+              sharedStorage:
+                streamerVideos:
+                  enabled: true
+                  storageClass: "${storage_class}"
+                  accessMode: ReadWriteMany
+                  size: 50Gi
+              sensor-ms:
+                persistence:
+                  useEmptyDir: false
+                  storageClass: "${storage_class}"
+                  accessMode: ReadWriteMany
+              nvstreamer:
+                imagePullSecrets:
+                  - name: "${ngc_docker_secret}"
+                persistence:
+                  storageClass: "${storage_class}"
+                  accessMode: ReadWriteMany
+
+              # ── single-writer volumes (ReadWriteOnce; pods can still ──────
+              # ── reschedule to any node on WEKA)                     ──────
+              centralizedb:
+                storage:
+                  data:
+                    storageClass: "${storage_class}"
+              redis:
+                persistence:
+                  storageClass: "${storage_class}"
+              phoenix:
+                persistence:
+                  storageClass: "${storage_class}"
+              kafka:
+                persistence:
+                  storageClass: "${storage_class}"
+              elasticsearch:
+                persistence:
+                  storageClass: "${storage_class}"
+              logstash:
+                persistence:
+                  storageClass: "${storage_class}"
+
+              # ── VST stream processing ─────────────────────────────────────
+              streamprocessing-ms:
+                # Must stay at 1: the stream distributor places all streams on
+                # ordinal-0 while the headless Service round-robins DNS, so a
+                # second replica would intercept live/thumbnail pulls and
+                # serve empty streams.
+                replicas: 1
+                persistence:
+                  storageClass: "${storage_class}"
+                  sharedAccessMode: ReadWriteMany
+                # Incident-clip volume: grows on demand and evicts the oldest
+                # clips at the ceiling (sized for ~24h retention at 4 streams).
+                clipStorage:
+                  enabled: true
+                  mode: elastic
+                  maxSizeGi: 60
+                  retentionHours: 24
+              sdr-envoy:
+                wdm:
+                  # Placement headroom so new streams are accepted while a
+                  # single streamprocessing replica serves them.
+                  maxReplicas: "2"
+
+              # ── perception ────────────────────────────────────────────────
+              perception:
+                replicas: 2                # 1 GPU each; up to 8 streams per pod
+                hostPortEnabled: false
+                imagePullSecrets:
+                  - name: "${ngc_docker_secret}"
+                persistence:
+                  storageClass: "${storage_class}"
+                  accessMode: ReadWriteMany
+                modelName2D: "GDINO"       # open-vocabulary detector; classes set via gdino.typeName
+                models:
+                  authSecretName: "${ngc_apikey_secret}"
+                  authSecretKey: "NGC_API_KEY"
+              # Keeps every online camera assigned to a perception pod,
+              # re-feeds streams after pod replacement, and re-adds streams
+              # that stop producing detections.
+              perception-router:
+                enabled: true
+                image:
+                  repository: "quay.io/weka.io/vss"
+                  tag: "perception-router-310-0.2.0"
+                imagePullSecrets:
+                  - name: weka-quay-secret
+
+              # ── embeddings ────────────────────────────────────────────────
+              rtvi-embed:
+                imagePullSecrets:
+                  - name: "${ngc_docker_secret}"
+                ngcApiKeySecret:
+                  name: "${ngc_apikey_secret}"
+                  key: "NGC_API_KEY"
+                persistence:
+                  storageClass: "${storage_class}"
+                clipStorage:
+                  enabled: false
+                  hostPath: ""
+              search-analytics:
+                imagePullSecrets:
+                  - name: "${ngc_docker_secret}"
+
+              # ── alert pipeline ────────────────────────────────────────────
+              behavior-analytics-alerts:
+                imagePullSecrets:
+                  - name: "${ngc_docker_secret}"
+              video-analytics-api:
+                imagePullSecrets:
+                  - name: "${ngc_docker_secret}"
+              # Verifies each raw alert with the Cosmos VLM and writes the
+              # "Verified" alert set shown in the UI.
+              multi-alert-classifier:
+                enabled: true
+                image:
+                  repository: "quay.io/weka.io/vss"
+                  tag: "multi-alert-classifier-0.4.0"
+                imagePullSecrets:
+                  - name: weka-quay-secret
+
+              # ── agent + UI ────────────────────────────────────────────────
+              agents:
+                imagePullSecrets:
+                  - name: "${ngc_docker_secret}"   # vss-ui (nvcr.io)
+                  - name: weka-quay-secret         # vss-agent (quay.io/weka.io/vss)
+                vssAgent:
+                  # LLM/VLM/VST/Elasticsearch/Phoenix endpoints are not set
+                  # here: the chart wires them to the in-cluster services
+                  # automatically.
+                  agentEval:
+                    storageClass: "${storage_class}"
+                  customTools:
+                    enabled: true          # alert-history search from chat
+                    clipZoomAnalysis:
+                      enabled: true        # crop+zoom VLM analysis of clip detail
+                  image:
+                    repository: "quay.io/weka.io/vss"
+                    tag: "vss-agent-zoom-0.1.0"
+                vssUi:
+                  chat:
+                    enabled: true
+                  search:
+                    enabled: false
+                  alerts:
+                    enabled: true
+                    defaultTimeWindowMinutes: 5
+                    verifiedFlagDefault: true
+                    maxResultSize: 10      # bounds on-demand thumbnail transcodes per page load
+                    mediaWithObjectsBbox: false
+                  videoManagement:
+                    enabled: true
+                    addRtspEnable: true
+                    videoUploadEnable: false
+                  dashboard:
+                    enabled: false
+              ui-proxy:
+                enabled: true              # WEKA-branded UI served at "/"
+
+              # ── NIMs (deployed through the NIM Operator) ──────────────────
+              nims:
+                gpuType: "${gpu_type}"
+
+      # ── 2. NVIDIA NIM Operator (provides NIMCache/NIMService CRDs) ────────
+      - name: nim-operator
+        description: "NVIDIA NIM Operator"
+        helmChart:
+          repository: https://helm.ngc.nvidia.com/nvidia
+          name: k8s-nim-operator
+          version: "3.1.1"
+          releaseName: k8s-nim-operator
+          crdsStrategy: Auto
+        waitForReady: true
+        readinessCheck:
+          type: deployment
+          selector: "app.kubernetes.io/name=k8s-nim-operator"
+          timeout: 300
+
+      # ── 3. The VSS Search stack ────────────────────────────────────────────
+      - name: vss-search
+        description: "VSS Search on WEKA (video ingest, perception, analytics, agent, UI)"
+        dependsOn:
+          - vss-values
+          - nim-operator
+        helmChart:
+          name: https://github.com/weka/neuralmesh-vss3-k8s/releases/download/vss-search-26.04.1/dev-profile-search-26.04.1.tgz
+          releaseName: vss-search
+          crdsStrategy: Auto
+        valuesFiles:
+          - kind: ConfigMap
+            name: vss-search-values
+            key: values.yaml
+        waitForReady: true
+        readinessCheck:
+          # The UI entrypoint. NIM model caching continues in the background
+          # after this reports Ready; first chat and alert-verification
+          # responses may lag until the model caches finish downloading.
+          type: deployment
+          name: vss-search-ui-proxy
+          timeout: 1800
