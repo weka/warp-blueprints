@@ -27,7 +27,8 @@ x-variables:
   external_host:
     type: string
     required: true
-    description: "Node IP or DNS name browsers use to reach the cluster. Used for UI links, WebRTC TURN, and clip download URLs."
+    validate: false  # bare host/IP, not a URL — skip URL format validation
+    description: "Node IP or DNS name browsers use to reach the cluster. Do NOT include http:// or https:// or a path -- bare host/IP only. Used for UI links, WebRTC TURN, and clip download URLs."
     placeholder: "e.g. 10.20.30.40 or vss.example.com"
   gpu_type:
     type: radio
