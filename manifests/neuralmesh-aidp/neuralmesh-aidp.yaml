@@ -27,6 +27,11 @@ x-variables:
     credential_type: weka-storage
     required: true
     description: "WEKA storage credential. Provides the WEKA REST API token used by the AIDP operator / Space Manager to manage filesystems. Register it on the Settings page."
+  quay_credential:
+    type: credential
+    credential_type: quay
+    required: true
+    description: "WEKA Quay.io credential for pulling the WEKA-built AIDP images from quay.io/weka.io/aidp. Register it on the Settings page."
   weka_s3_access_key:
     type: string
     required: true
@@ -138,6 +143,8 @@ spec:
       wekaS3AccessKey: "[[ weka_s3_access_key ]]"
       wekaS3SecretKey: "[[ weka_s3_secret_key ]]"
       wekaS3BucketName: "[[ weka_s3_bucket_name ]]"
+      # Derived secret provided by the selected Quay credential
+      quay_docker_secret: "warp-[[ quay_credential ]]-docker"
     components:
 
       - name: aidp-site-config
@@ -1081,6 +1088,14 @@ spec:
                 keycloakHostAlias:
                   enabled: true
 
+                # quay.io/weka.io/aidp is private. This secret is materialized
+                # into this namespace by the aidp-bootstrap-quay-secret
+                # component below, copied verbatim (same name) from the
+                # selected quay credential's derived secret in the App Store
+                # namespace.
+                imagePullSecrets:
+                  - name: "${quay_docker_secret}"
+
               gui:
                 baseUrl: "[[ gui_base_url ]]"     # e.g. https://aidp.example.com — gui.hostname is DERIVED from baseUrl
 
@@ -1699,6 +1714,146 @@ spec:
         readinessCheck:
           type: job
           name: weka-token-sync
+          timeout: 180
+
+      # =====================================================================
+      # Component 0.7: Quay Secret Sync
+      # quay.io/weka.io/aidp is private. Copies the selected quay credential's
+      # derived Docker pull secret from the App Store's own namespace
+      # (${appStoreNamespace}) into this namespace (${namespace}), under the
+      # SAME name, so aidp-values' global.imagePullSecrets can reference it
+      # directly. Mirrors the vss-bootstrap-credential-secrets pattern in
+      # nvidia-vss/vss-search.yaml (copy-verbatim, not re-materialize under a
+      # new name, unlike the older aidp-bootstrap-ngc-secrets Job above).
+      # =====================================================================
+      - name: aidp-bootstrap-quay-secret
+        enabled: true
+        dependsOn: [aidp-bootstrap-secrets]
+        description: "Copy the selected quay credential's derived docker pull secret from the App Store namespace into this namespace."
+        kubernetesManifest: |
+          apiVersion: v1
+          kind: ServiceAccount
+          metadata:
+            name: quay-secret-sync
+            namespace: ${namespace}
+            labels:
+              app.kubernetes.io/name: quay-secret-sync
+              app.kubernetes.io/component: appstack-bootstrap
+          ---
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: Role
+          metadata:
+            name: quay-secret-sync
+            namespace: ${namespace}
+          rules:
+            - apiGroups: [""]
+              resources: ["secrets"]
+              verbs: ["create"]
+            - apiGroups: [""]
+              resources: ["secrets"]
+              resourceNames:
+                - "${quay_docker_secret}"
+              verbs: ["get", "update", "patch"]
+          ---
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: RoleBinding
+          metadata:
+            name: quay-secret-sync
+            namespace: ${namespace}
+          subjects:
+            - kind: ServiceAccount
+              name: quay-secret-sync
+              namespace: ${namespace}
+          roleRef:
+            apiGroup: rbac.authorization.k8s.io
+            kind: Role
+            name: quay-secret-sync
+          ---
+          # App Store namespace Role: read ONLY the derived quay secret for
+          # the selected credential. Created in ${appStoreNamespace}; bound
+          # to the target-namespace ServiceAccount above.
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: Role
+          metadata:
+            name: aidp-quay-secret-sync-read
+            namespace: ${appStoreNamespace}
+          rules:
+            - apiGroups: [""]
+              resources: ["secrets"]
+              resourceNames:
+                - "${quay_docker_secret}"
+              verbs: ["get"]
+          ---
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: RoleBinding
+          metadata:
+            name: aidp-quay-secret-sync-read
+            namespace: ${appStoreNamespace}
+          subjects:
+            - kind: ServiceAccount
+              name: quay-secret-sync
+              namespace: ${namespace}
+          roleRef:
+            apiGroup: rbac.authorization.k8s.io
+            kind: Role
+            name: aidp-quay-secret-sync-read
+          ---
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: quay-secret-sync
+            namespace: ${namespace}
+            labels:
+              app.kubernetes.io/name: quay-secret-sync
+              app.kubernetes.io/component: appstack-bootstrap
+          spec:
+            backoffLimit: 3
+            ttlSecondsAfterFinished: 60
+            template:
+              spec:
+                restartPolicy: OnFailure
+                serviceAccountName: quay-secret-sync
+                containers:
+                  - name: sync
+                    image: alpine/k8s:1.30.0
+                    env:
+                      - name: NS
+                        valueFrom:
+                          fieldRef:
+                            fieldPath: metadata.namespace
+                      - name: QUAY_DOCKER_SECRET
+                        value: "${quay_docker_secret}"
+                    command:
+                      - /bin/bash
+                      - -c
+                      - |
+                        {%- raw %}
+                        set -euo pipefail
+                        echo "Copying ${QUAY_DOCKER_SECRET} from ${appStoreNamespace} into ${NS}..."
+                        DCJ=$(kubectl get secret "${QUAY_DOCKER_SECRET}" -n ${appStoreNamespace} -o jsonpath='{.data.\.dockerconfigjson}')
+                        if [[ -z "${DCJ}" ]]; then
+                          echo "ERROR: ${QUAY_DOCKER_SECRET} not found / empty in ${appStoreNamespace}." >&2
+                          echo "Hint: register a Quay credential on the Settings page and wait for it to sync." >&2
+                          exit 1
+                        fi
+                        cat <<EOF | kubectl apply -f -
+                        apiVersion: v1
+                        kind: Secret
+                        metadata:
+                          name: ${QUAY_DOCKER_SECRET}
+                          namespace: ${NS}
+                          labels:
+                            app.kubernetes.io/managed-by: aidp-bootstrap
+                            app.kubernetes.io/component: quay-secret-sync
+                        type: kubernetes.io/dockerconfigjson
+                        data:
+                          .dockerconfigjson: "${DCJ}"
+                        EOF
+                        echo "Quay pull secret synced into ${NS}."
+                        {% endraw %}
+        readinessCheck:
+          type: job
+          name: quay-secret-sync
           timeout: 180
 
       - name: aidp-keycloak-realm-config
@@ -3041,7 +3196,7 @@ spec:
         # with real Keycloak client secrets in env via envFrom on first start.
         # envoy-endpoint-discovery populates the envoy-endpoints ConfigMap so
         # the keycloakHostAlias.ip value is resolved before chart install.
-        dependsOn: [keycloak-secret-sync, nvidia-rag-blueprint, envoy-endpoint-discovery, space-manager-postgres, aidp-site-config]
+        dependsOn: [keycloak-secret-sync, nvidia-rag-blueprint, envoy-endpoint-discovery, space-manager-postgres, aidp-site-config, aidp-bootstrap-quay-secret]
         description: "WEKA AIDP — GUI, Operator, RAG Gateway, RAG Bridge, Space Manager"
         helmChart:
           # The chart name must be just "aidp" — the operator derives the
