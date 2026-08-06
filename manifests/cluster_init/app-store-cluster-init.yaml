@@ -367,10 +367,9 @@ spec:
       # Install NVIDIA DCGM ServiceMonitor via operator manifests
       - name: nvidia-dcgm-servicemonitor
         description: "ServiceMonitor for NVIDIA DCGM exporter"
-        enabled: false
+        enabled: true
         dependsOn:
           - kube-prom-stack        # ensure Prometheus Operator (CRDs) is ready
-          - nvidia-operator        # ensure DCGM exporter Service exists
           - prometheus-adapter
           - envoy-ingress-controller
         kubernetesManifest: |
