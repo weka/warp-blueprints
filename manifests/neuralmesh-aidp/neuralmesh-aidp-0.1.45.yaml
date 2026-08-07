@@ -13,10 +13,11 @@
 # =============================================================================
 x-catalog:
   app: neuralmesh-aidp
-  version: "dev-nemo-retriever"
-  release: dev
-  label: "Dev - NeMo Retriever test"
-  description: "Dev variant for isolating NeMo Retriever testing. Currently identical to the release blueprint pending component removal."
+  version: "0.1.45"
+  release: release
+  label: "Release (0.1.45)"
+  description: "Previous-2 production AIDP release, kept for rollback."
+  order: 2
 x-variables:
   namespace:
     type: string
@@ -2872,7 +2873,7 @@ spec:
           name: aidp-observability
           # Paired with the aidp chart version below — each AIDP version is cut
           # alongside a matching aidp-observability version.
-          version: "1.0.0"
+          version: "0.1.15"
           releaseName: aidp-observability
           crdsStrategy: Skip
         valuesFiles:
@@ -3213,7 +3214,7 @@ spec:
           # helm treats as a non-existent chart.
           repository: "https://weka.github.io/aidp-helm"
           name: aidp
-          version: "1.0.1"
+          version: "0.1.45"
           releaseName: aidp
           crdsStrategy: Auto
         valuesFiles:

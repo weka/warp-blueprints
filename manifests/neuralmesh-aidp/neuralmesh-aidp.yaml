@@ -17,6 +17,7 @@ x-catalog:
   release: release
   label: "Release (1.0.1)"
   description: "Production AIDP install."
+  order: 0
 x-variables:
   namespace:
     type: string
@@ -33,18 +34,6 @@ x-variables:
     credential_type: weka-storage
     required: true
     description: "WEKA storage credential. Provides the WEKA REST API token used by the AIDP operator / Space Manager to manage filesystems. Register it on the Settings page."
-  aidp_version:
-    type: radio
-    required: true
-    default: "1.0.1"
-    options:
-      - value: "1.0.1"
-        label: "Current (1.0.1)"
-      - value: "0.1.46"
-        label: "Previous (0.1.46)"
-      - value: "0.1.45"
-        label: "Previous-2 (0.1.45)"
-    description: "AIDP version to install. Selects the matching aidp-observability version automatically. Update these options when a new version is cut -- there is no automatic version discovery."
   quay_credential:
     type: credential
     credential_type: quay
@@ -2882,10 +2871,9 @@ spec:
         helmChart:
           repository: "https://weka.github.io/aidp-helm"
           name: aidp-observability
-          # Paired with aidp_version: each AIDP version was cut alongside a
-          # matching aidp-observability version. Update this map whenever the
-          # aidp_version x-variable options change.
-          version: "[[ {'1.0.1': '1.0.0', '0.1.46': '0.1.16', '0.1.45': '0.1.15'}[aidp_version] ]]"
+          # Paired with the aidp chart version below — each AIDP version is cut
+          # alongside a matching aidp-observability version.
+          version: "1.0.0"
           releaseName: aidp-observability
           crdsStrategy: Skip
         valuesFiles:
@@ -3226,7 +3214,7 @@ spec:
           # helm treats as a non-existent chart.
           repository: "https://weka.github.io/aidp-helm"
           name: aidp
-          version: "[[ aidp_version ]]"
+          version: "1.0.1"
           releaseName: aidp
           crdsStrategy: Auto
         valuesFiles:
