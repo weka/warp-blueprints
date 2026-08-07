@@ -38,27 +38,32 @@ x-variables:
     credential_type: quay
     required: true
     description: "WEKA Quay.io credential for pulling the WEKA-built AIDP images from quay.io/weka.io/aidp. Register it on the Settings page."
-  weka_s3_access_key:
-    type: string
-    required: true
-    description: "WEKA S3 access key. Milvus and the NVIDIA ingestion pipeline use this to read/write the configured S3 bucket over the WEKA S3 (MinIO-compatible) endpoint."
-    placeholder: "e.g. 0ABCDEF1234567890XYZ"
-  weka_s3_secret_key:
-    type: string
-    required: true
-    description: "WEKA S3 secret key paired with the access key above."
-    placeholder: "e.g. abcd1234efgh5678ijkl9012mnop3456"
-  weka_s3_bucket_name:
-    type: string
-    required: false
-    default: "aidp-bucket"
-    description: "WEKA S3 bucket name used by Milvus and the NVIDIA ingestion pipeline. Must be pre-created on the WEKA cluster. Defaults to 'aidp-bucket'."
-    placeholder: "e.g. aidp-bucket"
-  weka_s3_node_ips:
-    type: string
-    required: true
-    description: "Comma- or space-separated WEKA S3 node IPs. The nginx S3 load balancer fans out across these on port 9000. Enumerate with: weka cluster nodes --role S3"
-    placeholder: "e.g. 192.168.1.1, 192.168.1.2, 192.168.1.3"
+  # weka_s3_access_key: only consumed by milvus-values / nvidia-rag-values / nvidia-gpu-profile,
+  # whose components (milvus, nvidia-rag-blueprint) are enabled: false in this dev variant.
+  # weka_s3_access_key:
+  #   type: string
+  #   required: true
+  #   description: "WEKA S3 access key. Milvus and the NVIDIA ingestion pipeline use this to read/write the configured S3 bucket over the WEKA S3 (MinIO-compatible) endpoint."
+  #   placeholder: "e.g. 0ABCDEF1234567890XYZ"
+  # weka_s3_secret_key: same as weka_s3_access_key — only used by disabled components.
+  # weka_s3_secret_key:
+  #   type: string
+  #   required: true
+  #   description: "WEKA S3 secret key paired with the access key above."
+  #   placeholder: "e.g. abcd1234efgh5678ijkl9012mnop3456"
+  # weka_s3_bucket_name: same as weka_s3_access_key — only used by disabled components.
+  # weka_s3_bucket_name:
+  #   type: string
+  #   required: false
+  #   default: "aidp-bucket"
+  #   description: "WEKA S3 bucket name used by Milvus and the NVIDIA ingestion pipeline. Must be pre-created on the WEKA cluster. Defaults to 'aidp-bucket'."
+  #   placeholder: "e.g. aidp-bucket"
+  # weka_s3_node_ips: only consumed by the weka-s3-lb component, which is enabled: false in this dev variant.
+  # weka_s3_node_ips:
+  #   type: string
+  #   required: true
+  #   description: "Comma- or space-separated WEKA S3 node IPs. The nginx S3 load balancer fans out across these on port 9000. Enumerate with: weka cluster nodes --role S3"
+  #   placeholder: "e.g. 192.168.1.1, 192.168.1.2, 192.168.1.3"
   weka_api_host:
     type: string
     required: true
@@ -76,12 +81,14 @@ x-variables:
     required: true
     description: "External URL of the AIDP GUI. The Keycloak OIDC redirect URI is derived from this."
     placeholder: "e.g. https://aidp.example.com"
-  attu_hostname:
-    type: string
-    required: true
-    format: hostname
-    description: "External FQDN for the Milvus Attu admin UI (exposed via the Envoy HTTPRoute). Hostname only — no http:// or path."
-    placeholder: "e.g. attu.example.com"
+  # attu_hostname: attuRoute is disabled (milvus is disabled in this dev variant, so
+  # there's no milvus-attu backend to route to) — no longer referenced anywhere.
+  # attu_hostname:
+  #   type: string
+  #   required: true
+  #   format: hostname
+  #   description: "External FQDN for the Milvus Attu admin UI (exposed via the Envoy HTTPRoute). Hostname only — no http:// or path."
+  #   placeholder: "e.g. attu.example.com"
   cluster_fqdn:
     type: string
     required: true
@@ -1130,8 +1137,8 @@ spec:
                 hostname: ""               # unused while disabled; set FQDN if re-enabling
 
               attuRoute:
-                enabled: true
-                hostname: "[[ attu_hostname ]]"   # bare FQDN for Envoy HTTPRoute → milvus-attu:3000
+                enabled: false             # milvus is disabled in this dev variant, so there's no milvus-attu backend to route to
+                hostname: ""               # unused while disabled; set FQDN if re-enabling
 
               operator:
                 weka:
@@ -1181,7 +1188,7 @@ spec:
       # Run: weka cluster nodes --role S3 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+'
       # =====================================================================
       - name: weka-s3-lb
-        enabled: true
+        enabled: false
         dependsOn: []
         description: "nginx S3 load balancer — stable ClusterIP in front of WEKA S3 nodes"
         kubernetesManifest: |
@@ -2692,7 +2699,7 @@ spec:
       # config changes.
       # =====================================================================
       - name: milvus
-        enabled: true
+        enabled: false
         dependsOn: [aidp-bootstrap-secrets, weka-s3-lb, aidp-site-config]
         description: "Milvus 2.6.3 cluster — vector DB for RAG (S3-backed via WEKA S3 <configured bucket>/milvus, Kafka MQ)"
         helmChart:
@@ -2902,7 +2909,7 @@ spec:
       # envoy-gateway-system, discovered by owning-gateway labels.
       # =====================================================================
       - name: embedding-gateway
-        enabled: true
+        enabled: false
         dependsOn: [aidp-bootstrap-secrets]
         description: "Envoy Gateway internal L7 proxy for embedding LB — stable embedding-proxy DNS for nv-ingest"
         kubernetesManifest: |
@@ -3120,7 +3127,7 @@ spec:
       # Component 3: NVIDIA RAG Blueprint (Umbrella Chart)
       # =====================================================================
       - name: nvidia-rag-blueprint
-        enabled: true
+        enabled: false
         dependsOn: [milvus, aidp-bootstrap-nim-cache, aidp-observability, embedding-gateway, weka-s3-lb, aidp-site-config]
         description: "NVIDIA RAG Blueprint — NIMs, ingestion pipeline, and RAG server (external Milvus)"
         helmChart:
@@ -3204,7 +3211,13 @@ spec:
         # with real Keycloak client secrets in env via envFrom on first start.
         # envoy-endpoint-discovery populates the envoy-endpoints ConfigMap so
         # the keycloakHostAlias.ip value is resolved before chart install.
-        dependsOn: [keycloak-secret-sync, nvidia-rag-blueprint, envoy-endpoint-discovery, space-manager-postgres, aidp-site-config, aidp-bootstrap-quay-secret]
+        dependsOn:
+          - keycloak-secret-sync
+          # - nvidia-rag-blueprint  # commented out: enabled: false in this dev variant
+          - envoy-endpoint-discovery
+          - space-manager-postgres
+          - aidp-site-config
+          - aidp-bootstrap-quay-secret
         description: "WEKA AIDP — GUI, Operator, RAG Gateway, RAG Bridge, Space Manager"
         helmChart:
           # The chart name must be just "aidp" — the operator derives the
